@@ -1,0 +1,9 @@
+INSTRUCCIONES AVE Seguimiento PRO v13
+
+1. La base ahora es GENERAL. No cree una base distinta por curso.
+2. Cada registro guarda: periodo, curso, curso_id_canvas, sección, seccion_id_canvas, semana y asesor_académico.
+3. Si un estudiante está en dos cursos, aparecerá separado por curso/sección.
+4. Para Streamlit Cloud, use Supabase y guarde las credenciales en Secrets.
+5. Para reportes manuales, incluya columnas como nombre, carne, correo, curso, sección, actividades_pct, promedio, entregas_tarde, ingresos_semana y dias_inactivo cuando existan.
+6. Para bienestar, cargue CSV o Excel con nombre del estudiante y asesor de bienestar. La app cruza por carné y por nombre normalizado.
+7. Use la pestaña Institucional para revisar resumen por curso, sección y asesor.

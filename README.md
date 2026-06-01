@@ -1,27 +1,30 @@
-# AVE Seguimiento PRO v12
+# AVE Seguimiento PRO v13 - Multi-curso y multi-asesor
 
-Sistema de seguimiento y derivación académica para asesores AVE.
+Esta versión permite trabajar con una base general institucional, separando cada análisis por periodo/cohorte, curso, ID de curso Canvas, sección, ID de sección Canvas, semana y asesor académico.
 
-## Novedades v12
+## Novedades v13
 
-- Mantiene el flujo de Excel manual/local o sincronizado.
-- Agrega modo **Supabase en línea**, recomendado para Streamlit Cloud.
-- Permite leer y guardar la base institucional sin rutas locales, sin Azure y sin Microsoft Graph.
-- Conserva conexión con Canvas, selector de cursos, clasificación de riesgo, mensajes y derivaciones por asesor de bienestar.
-- Permite exportar la base a Excel como respaldo institucional.
+- Base general para varios cursos, secciones y asesores académicos.
+- No mezcla el historial de un mismo estudiante entre cursos diferentes.
+- Dashboard con filtros por periodo, curso, sección, asesor académico, asesor de bienestar y riesgo.
+- Nueva pestaña **Institucional** para ver resumen por curso/sección/asesor.
+- Derivaciones contextualizadas con periodo, curso y sección.
+- Lectura más robusta de CSV institucionales con separador coma o punto y coma.
+- Compatible con Supabase como base en línea para Streamlit Cloud.
 
-## Ejecutar localmente
+## Uso recomendado
 
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+1. Crear o leer base desde Supabase.
+2. Completar en la barra lateral: periodo/cohorte, semana, curso manual y sección si aplica.
+3. Validar token de Canvas y cargar cursos.
+4. Seleccionar curso y ejecutar análisis.
+5. Revisar Dashboard e Institucional.
+6. Generar mensajes y derivaciones.
+7. Guardar cambios en Supabase o exportar Excel.
 
-## Configuración Supabase
+## Supabase
 
-1. Crear proyecto en Supabase.
-2. Ejecutar `supabase_schema.sql` en SQL Editor.
-3. Guardar credenciales en Streamlit Cloud > Settings > Secrets:
+Ejecutar `supabase_schema.sql` en el SQL Editor del proyecto. Luego configurar en Streamlit Cloud > Settings > Secrets:
 
 ```toml
 [supabase]
@@ -29,18 +32,4 @@ url = "https://TU-PROYECTO.supabase.co"
 service_role_key = "TU_SERVICE_ROLE_KEY"
 ```
 
-4. En la app, ir a **Base de datos > Usar Supabase en línea**.
-
-## Estructura de datos
-
-La base se guarda en una tabla llamada `ave_base_datos`, donde cada fila representa una hoja lógica:
-
-- Estudiantes
-- Asesores_Bienestar
-- Historial_Estudiantes
-- Derivaciones
-- Mensajes_Enviados
-- Consultas_Canvas
-- Configuracion
-
-Este diseño evita depender de un Excel físico en Streamlit Cloud y permite exportar todo nuevamente a Excel cuando se necesite.
+La tabla compacta utilizada es `ave_base_datos`, donde cada hoja se guarda como JSONB.

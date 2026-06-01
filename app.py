@@ -29,12 +29,12 @@ RIESGO_ORDEN = {"Bajo": 1, "Moderado": 2, "Alto": 3}
 RIESGO_COLOR = {"Bajo": "#0F766E", "Moderado": "#B7791F", "Alto": "#B91C1C"}
 
 SHEETS = {
-    "Estudiantes": ["carne", "nombre", "correo", "telefono", "carrera", "trimestre", "curso", "seccion", "canvas_user_id", "asesor_bienestar"],
+    "Estudiantes": ["periodo", "carne", "nombre", "correo", "telefono", "carrera", "trimestre", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "canvas_user_id", "asesor_academico", "asesor_bienestar"],
     "Asesores_Bienestar": ["id_asesor", "nombre", "correo", "telefono", "observaciones"],
-    "Historial_Estudiantes": ["fecha", "id_consulta", "carne", "nombre", "correo", "curso", "seccion", "semana", "actividades_pct", "promedio", "entregas_tarde", "semanas_sin_entregas", "ingresos_semana", "dias_inactivo", "horas_respuesta", "riesgo", "riesgo_anterior", "cambio", "motivo_detectado", "asesor_academico"],
-    "Derivaciones": ["id_derivacion", "fecha", "carne", "nombre", "correo", "curso", "seccion", "riesgo", "prioridad", "asesor_bienestar", "correo_bienestar", "motivo", "acciones_previas", "observaciones", "estado_derivacion", "asesor_academico"],
-    "Mensajes_Enviados": ["fecha", "carne", "nombre", "correo", "curso", "riesgo", "tipo_mensaje", "mensaje_generado", "enviado_canvas", "asesor_academico"],
-    "Consultas_Canvas": ["id_consulta", "fecha_consulta", "asesor_academico", "curso", "semana", "total_estudiantes", "bajo", "moderado", "alto", "fuente_datos"],
+    "Historial_Estudiantes": ["fecha", "id_consulta", "periodo", "carne", "nombre", "correo", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "semana", "actividades_pct", "promedio", "entregas_tarde", "semanas_sin_entregas", "ingresos_semana", "dias_inactivo", "horas_respuesta", "riesgo", "riesgo_anterior", "cambio", "motivo_detectado", "asesor_academico", "asesor_bienestar"],
+    "Derivaciones": ["id_derivacion", "fecha", "periodo", "carne", "nombre", "correo", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "riesgo", "prioridad", "asesor_bienestar", "correo_bienestar", "motivo", "acciones_previas", "observaciones", "estado_derivacion", "asesor_academico"],
+    "Mensajes_Enviados": ["fecha", "periodo", "carne", "nombre", "correo", "curso", "curso_id_canvas", "seccion", "riesgo", "tipo_mensaje", "mensaje_generado", "enviado_canvas", "asesor_academico", "asesor_bienestar"],
+    "Consultas_Canvas": ["id_consulta", "fecha_consulta", "periodo", "asesor_academico", "curso", "curso_id_canvas", "seccion", "semana", "total_estudiantes", "bajo", "moderado", "alto", "fuente_datos"],
     "Configuracion": ["parametro", "valor"],
 }
 
@@ -89,7 +89,7 @@ def clean_key_value(value):
 def normalize_key_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Convierte claves institucionales y Canvas a texto antes de comparar o fusionar."""
     df = df.copy()
-    for col in ["carne", "canvas_user_id", "correo", "login_id", "id_asesor"]:
+    for col in ["carne", "canvas_user_id", "correo", "login_id", "id_asesor", "curso_id_canvas", "seccion_id_canvas", "periodo"]:
         if col in df.columns:
             df[col] = df[col].map(clean_key_value)
     return df
@@ -101,6 +101,38 @@ def normalize_db_keys(db: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
     for name, df in db.items():
         out[name] = normalize_key_columns(df) if isinstance(df, pd.DataFrame) else df
     return out
+
+
+def build_context_key(df: pd.DataFrame) -> pd.Series:
+    """Clave compuesta para no mezclar al mismo estudiante entre cursos, secciones o periodos."""
+    temp = normalize_key_columns(df.copy())
+    for col in ["carne", "canvas_user_id", "correo", "nombre", "periodo", "curso_id_canvas", "curso", "seccion_id_canvas", "seccion"]:
+        if col not in temp.columns:
+            temp[col] = ""
+    student_key = temp["carne"].fillna(temp["canvas_user_id"]).fillna(temp["correo"]).fillna(temp["nombre"]).astype(str).str.strip()
+    course_key = temp["curso_id_canvas"].fillna(temp["curso"]).astype(str).str.strip()
+    section_key = temp["seccion_id_canvas"].fillna(temp["seccion"]).astype(str).str.strip()
+    period_key = temp["periodo"].fillna("").astype(str).str.strip()
+    return period_key + "|" + course_key + "|" + section_key + "|" + student_key
+
+
+def make_consulta_row(idc: str, analyzed: pd.DataFrame, asesor: str, periodo: str, curso: str, curso_id: str, seccion: str, semana: int, fuente: str) -> Dict:
+    counts = analyzed["riesgo"].value_counts().to_dict() if analyzed is not None and not analyzed.empty else {}
+    return {
+        "id_consulta": idc,
+        "fecha_consulta": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "periodo": periodo,
+        "asesor_academico": asesor,
+        "curso": curso,
+        "curso_id_canvas": curso_id,
+        "seccion": seccion,
+        "semana": semana,
+        "total_estudiantes": len(analyzed) if analyzed is not None else 0,
+        "bajo": counts.get("Bajo", 0),
+        "moderado": counts.get("Moderado", 0),
+        "alto": counts.get("Alto", 0),
+        "fuente_datos": fuente,
+    }
 
 def load_excel_db(uploaded_file) -> Dict[str, pd.DataFrame]:
     db = empty_db()
@@ -218,14 +250,11 @@ def upsert_students_from_analysis(db: Dict[str, pd.DataFrame], analyzed: pd.Data
     for c in SHEETS["Estudiantes"]:
         incoming[c] = analyzed[c] if c in analyzed.columns else np.nan
     incoming = normalize_key_columns(incoming[SHEETS["Estudiantes"]].copy())
-    # Clave preferida: carne; si no hay carné, usar canvas_user_id; si no, correo.
+    # En la base general, el mismo estudiante puede existir en varios cursos/secciones/periodos.
     combined = pd.concat([current[SHEETS["Estudiantes"]], incoming], ignore_index=True)
     combined = combined.replace({"": np.nan})
-    if combined["carne"].notna().any():
-        combined["_key"] = combined["carne"].fillna(combined["canvas_user_id"]).fillna(combined["correo"]).astype(str)
-    else:
-        combined["_key"] = combined["canvas_user_id"].fillna(combined["correo"]).fillna(combined["nombre"]).astype(str)
-    combined = combined[combined["_key"].astype(str).str.strip().ne("")]
+    combined["_key"] = build_context_key(combined)
+    combined = combined[combined["_key"].astype(str).str.strip().ne("|||")]
     combined = combined.drop_duplicates("_key", keep="last").drop(columns=["_key"])
     db["Estudiantes"] = combined[SHEETS["Estudiantes"]].reset_index(drop=True)
     return db
@@ -272,12 +301,18 @@ def read_bienestar_file(uploaded_file) -> pd.DataFrame:
         raise ValueError("Cargá un archivo CSV o Excel de asignación de bienestar.")
     name = uploaded_file.name.lower()
     if name.endswith(".csv"):
-        # Intentar UTF-8 y fallback común de Excel en español.
+        # Lectura robusta: detecta separador (, o ;) y tolera CSV exportados desde Excel con tildes/comillas.
         raw_bytes = uploaded_file.getvalue()
-        try:
-            df = pd.read_csv(io.BytesIO(raw_bytes), encoding="utf-8-sig")
-        except Exception:
-            df = pd.read_csv(io.BytesIO(raw_bytes), encoding="latin-1")
+        last_error = None
+        df = None
+        for enc in ["utf-8-sig", "latin-1", "cp1252"]:
+            try:
+                df = pd.read_csv(io.BytesIO(raw_bytes), sep=None, engine="python", encoding=enc, on_bad_lines="skip")
+                break
+            except Exception as e:
+                last_error = e
+        if df is None:
+            raise last_error
     else:
         df = pd.read_excel(uploaded_file)
     if df.empty:
@@ -520,6 +555,17 @@ class CanvasClient:
             df["label"] = df.apply(lambda r: f"{r.get('name','')} | ID: {r.get('id','')}" + (f" | {r.get('course_code')}" if pd.notna(r.get('course_code')) and str(r.get('course_code')).strip() else ""), axis=1)
         return df
 
+    def sections(self, course_id: str) -> pd.DataFrame:
+        """Devuelve secciones del curso cuando el token tiene permiso."""
+        try:
+            data = self._get_paginated(f"/courses/{course_id}/sections", {})
+        except Exception:
+            return pd.DataFrame(columns=["seccion_id_canvas", "seccion"])
+        rows = []
+        for s in data:
+            rows.append({"seccion_id_canvas": s.get("id"), "seccion": s.get("name")})
+        return normalize_key_columns(pd.DataFrame(rows))
+
     def users(self, course_id: str) -> pd.DataFrame:
         data = self._get_paginated(f"/courses/{course_id}/users", {"enrollment_type[]": "student"})
         return normalize_key_columns(pd.DataFrame([{"canvas_user_id": u.get("id"), "nombre": u.get("name"), "correo": u.get("email"), "login_id": u.get("login_id")} for u in data]))
@@ -546,6 +592,7 @@ class CanvasClient:
                 "promedio": current_score if current_score is not None else final_score,
                 "last_activity_at": last_activity_at,
                 "total_activity_time": e.get("total_activity_time"),
+                "seccion_id_canvas": e.get("course_section_id"),
             })
         return normalize_key_columns(pd.DataFrame(rows))
 
@@ -574,6 +621,16 @@ class CanvasClient:
             base = normalize_key_columns(self.users(course_id))
         if base.empty:
             return base
+
+        # Sección Canvas: permite separar secciones dentro de una misma base general.
+        try:
+            sections = self.sections(course_id)
+            if not sections.empty and "seccion_id_canvas" in base.columns:
+                section_map = sections.dropna(subset=["seccion_id_canvas"]).drop_duplicates("seccion_id_canvas").set_index("seccion_id_canvas")["seccion"].to_dict()
+                base["seccion"] = base["seccion_id_canvas"].map(section_map)
+        except Exception:
+            pass
+        base["curso_id_canvas"] = course_id
 
         # Actividad reciente: Canvas suele entregar last_activity_at en enrollments.
         if "last_activity_at" in base.columns:
@@ -820,7 +877,18 @@ def make_derivation_doc(row: pd.Series, asesor_academico: str, asesor_bienestar:
 # -----------------------------------------------------------------------------
 # Data processing
 # -----------------------------------------------------------------------------
-def standardize_analysis_input(df: pd.DataFrame, db: Dict[str, pd.DataFrame], curso: str, semana: int, asesor: str) -> pd.DataFrame:
+def standardize_analysis_input(
+    df: pd.DataFrame,
+    db: Dict[str, pd.DataFrame],
+    curso: str,
+    semana: int,
+    asesor: str,
+    periodo: str = "",
+    curso_id_canvas: str = "",
+    seccion_default: str = "",
+    seccion_id_canvas: str = "",
+) -> pd.DataFrame:
+    """Estandariza indicadores y conserva contexto multi-curso/multi-sección."""
     db = normalize_db_keys(db)
     df = normalize_key_columns(normalize_cols(df))
     aliases = {
@@ -828,39 +896,57 @@ def standardize_analysis_input(df: pd.DataFrame, db: Dict[str, pd.DataFrame], cu
         "mail": "correo", "email": "correo", "score": "promedio", "calificacion": "promedio",
         "actividades_completadas_%": "actividades_pct", "porcentaje_actividades": "actividades_pct", "avance": "actividades_pct",
         "late": "entregas_tarde", "tardias": "entregas_tarde", "missing": "semanas_sin_entregas",
-        "ingresos": "ingresos_semana", "dias_sin_actividad": "dias_inactivo", "respuesta_horas": "horas_respuesta"
+        "ingresos": "ingresos_semana", "dias_sin_actividad": "dias_inactivo", "respuesta_horas": "horas_respuesta",
+        "course_id": "curso_id_canvas", "canvas_course_id": "curso_id_canvas", "course_section_id": "seccion_id_canvas",
+        "section_id": "seccion_id_canvas", "periodo_academico": "periodo", "cohorte": "periodo",
     }
     df = df.rename(columns={c: aliases.get(c, c) for c in df.columns})
-    for col in ["carne", "nombre", "correo", "telefono", "carrera", "trimestre", "curso", "seccion", "canvas_user_id", "asesor_bienestar", "actividades_pct", "promedio", "entregas_tarde", "semanas_sin_entregas", "ingresos_semana", "dias_inactivo", "horas_respuesta"]:
+    needed = ["periodo", "carne", "nombre", "correo", "telefono", "carrera", "trimestre", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "canvas_user_id", "asesor_academico", "asesor_bienestar", "actividades_pct", "promedio", "entregas_tarde", "semanas_sin_entregas", "ingresos_semana", "dias_inactivo", "horas_respuesta"]
+    for col in needed:
         if col not in df.columns:
             df[col] = np.nan
     df = normalize_key_columns(df)
-    df["curso"] = df["curso"].fillna(curso)
-    df.loc[df["curso"].astype(str).str.strip().eq(""), "curso"] = curso
+    for col, default in [("periodo", periodo), ("curso", curso), ("curso_id_canvas", curso_id_canvas), ("seccion", seccion_default), ("seccion_id_canvas", seccion_id_canvas), ("asesor_academico", asesor)]:
+        df[col] = df[col].fillna(default)
+        df.loc[df[col].astype(str).str.strip().isin(["", "nan", "None"]), col] = default
+
     est = normalize_key_columns(db.get("Estudiantes", pd.DataFrame()))
     if not est.empty and "carne" in df.columns:
-        df = normalize_key_columns(df)
-        base_cols = [c for c in ["carne", "telefono", "carrera", "trimestre", "seccion", "asesor_bienestar", "canvas_user_id"] if c in est.columns]
-        est_base = normalize_key_columns(est[base_cols].drop_duplicates("carne"))
-        df = df.merge(est_base, on="carne", how="left", suffixes=("", "_base"))
-        for c in ["telefono", "carrera", "trimestre", "seccion", "asesor_bienestar", "canvas_user_id"]:
+        base_cols = [c for c in ["periodo", "carne", "telefono", "carrera", "trimestre", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "asesor_academico", "asesor_bienestar", "canvas_user_id"] if c in est.columns]
+        est_base = normalize_key_columns(est[base_cols].copy())
+        # Match por contexto cuando sea posible; si no, por carné.
+        if {"periodo", "curso", "seccion", "carne"}.issubset(set(est_base.columns)):
+            est_base["_ctx"] = build_context_key(est_base)
+            df["_ctx"] = build_context_key(df)
+            df = df.merge(est_base.drop_duplicates("_ctx"), on="_ctx", how="left", suffixes=("", "_base"))
+            df.drop(columns=["_ctx"], inplace=True, errors="ignore")
+        else:
+            est_base = est_base.drop_duplicates("carne")
+            df = df.merge(est_base, on="carne", how="left", suffixes=("", "_base"))
+        for c in ["telefono", "carrera", "trimestre", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "asesor_academico", "asesor_bienestar", "canvas_user_id"]:
             if f"{c}_base" in df.columns:
                 df[c] = df[c].combine_first(df[f"{c}_base"])
-                df.drop(columns=[f"{c}_base"], inplace=True)
+                df.drop(columns=[f"{c}_base"], inplace=True, errors="ignore")
+
     risks, motives = [], []
     for _, row in df.iterrows():
         r, m = classify_student(row)
         risks.append(r); motives.append(m)
     df["riesgo"] = risks
     df["motivo_detectado"] = motives
+
     hist = normalize_key_columns(db.get("Historial_Estudiantes", pd.DataFrame()))
     prev_map = {}
-    if not hist.empty and "carne" in hist.columns:
-        h = hist.dropna(subset=["carne"]).copy()
+    if not hist.empty:
+        h = hist.copy()
         h["fecha_sort"] = pd.to_datetime(h.get("fecha"), errors="coerce")
-        h = h.sort_values("fecha_sort").drop_duplicates("carne", keep="last")
-        prev_map = h.set_index("carne")["riesgo"].to_dict()
-    df["riesgo_anterior"] = df["carne"].map(prev_map)
+        h["_ctx"] = build_context_key(h)
+        h = h[h["_ctx"].astype(str).str.strip().ne("|||")]
+        h = h.sort_values("fecha_sort").drop_duplicates("_ctx", keep="last")
+        prev_map = h.set_index("_ctx")["riesgo"].to_dict() if "riesgo" in h.columns else {}
+    df["_ctx"] = build_context_key(df)
+    df["riesgo_anterior"] = df["_ctx"].map(prev_map)
+    df.drop(columns=["_ctx"], inplace=True, errors="ignore")
     df["cambio"] = [compare_risk(p, c) for p, c in zip(df["riesgo_anterior"], df["riesgo"])]
     df["semana"] = semana
     df["asesor_academico"] = asesor
@@ -963,20 +1049,22 @@ st.sidebar.header("Configuración")
 asesor_academico = st.sidebar.text_input("Nombre del asesor académico", value="Asesor Académico")
 horario_atencion = st.sidebar.text_input("Horario de atención para riesgo alto", value="martes y jueves de 16:00 a 17:00")
 canal_atencion = st.sidebar.text_input("Canal de atención", value="Bandeja de entrada de Canvas / enlace institucional")
+periodo_analisis = st.sidebar.text_input("Periodo / cohorte", value="2026-1")
 semana_analisis = st.sidebar.selectbox("Semana de análisis", [1, 2, 3, 4, 5], index=0)
 curso_manual = st.sidebar.text_input("Nombre del curso", value="Curso AVE")
+seccion_manual = st.sidebar.text_input("Sección del curso", value="")
 
 st.title(APP_NAME)
-st.caption("Clasificación de riesgo, historial académico, mensajes preventivos y derivaciones a bienestar con base de datos en Excel local/sincronizado o Supabase en línea.")
+st.caption("Base general multi-curso y multi-asesor: cada análisis queda separado por periodo, curso, sección, semana y asesor académico.")
 
-tabs = st.tabs(["🏠 Inicio", "🗂️ Base de datos", "🔌 Canvas / Datos", "📊 Dashboard", "👤 Estudiante", "✉️ Mensajes", "📌 Derivaciones", "⬇️ Exportar"])
+tabs = st.tabs(["🏠 Inicio", "🗂️ Base de datos", "🔌 Canvas / Datos", "📊 Dashboard", "🏢 Institucional", "👤 Estudiante", "✉️ Mensajes", "📌 Derivaciones", "⬇️ Exportar"])
 
 # -----------------------------------------------------------------------------
 # Inicio
 # -----------------------------------------------------------------------------
 with tabs[0]:
     st.markdown("### Propósito")
-    st.write("Esta aplicación apoya el primer filtro del asesor académico mediante el análisis de actividades, calificaciones, entregas, actividad en Canvas y respuesta a comunicaciones. A partir de estos datos clasifica a cada estudiante en riesgo bajo, moderado o alto, genera acciones preventivas y registra historial para evitar duplicidad de derivaciones.")
+    st.write("Esta aplicación apoya el primer filtro del asesor académico mediante el análisis de actividades, calificaciones, entregas, actividad en Canvas y respuesta a comunicaciones. La base es general institucional y cada registro queda separado por periodo, curso, sección, semana y asesor académico para que seis o más asesores puedan trabajar sin mezclar cursos.")
     c1, c2, c3 = st.columns(3)
     c1.info("**Riesgo bajo**\n\nRetroalimentación cálida y seguimiento académico regular.")
     c2.warning("**Riesgo moderado**\n\nMensaje de preocupación, seguimiento y posible derivación a bienestar.")
@@ -1220,14 +1308,14 @@ with tabs[2]:
     report_file = st.file_uploader("Cargar reporte CSV o Excel con columnas de indicadores", type=["csv", "xlsx"], key="report")
     if report_file:
         if report_file.name.lower().endswith("csv"):
-            raw = pd.read_csv(report_file)
+            raw = pd.read_csv(report_file, sep=None, engine="python", encoding="utf-8-sig", on_bad_lines="skip")
         else:
             raw = pd.read_excel(report_file)
         st.write("Vista previa del reporte cargado")
         st.dataframe(raw.head(20), use_container_width=True)
         if st.button("Ejecutar análisis con reporte cargado", type="primary"):
             curso_analisis = st.session_state.selected_canvas_course_name or curso_manual
-            analyzed = standardize_analysis_input(raw, st.session_state.db, curso_analisis, semana_analisis, asesor_academico)
+            analyzed = standardize_analysis_input(raw, st.session_state.db, curso_analisis, semana_analisis, asesor_academico, periodo_analisis, st.session_state.selected_canvas_course_id, seccion_manual, "")
             analyzed = apply_bienestar_to_analysis(analyzed, st.session_state.db)
             st.session_state.analysis_df = analyzed
             st.session_state.db = upsert_students_from_analysis(st.session_state.db, analyzed)
@@ -1238,7 +1326,7 @@ with tabs[2]:
                 rows.append(d)
             append_rows(st.session_state.db, "Historial_Estudiantes", rows)
             counts = analyzed["riesgo"].value_counts().to_dict()
-            append_rows(st.session_state.db, "Consultas_Canvas", [{"id_consulta": idc, "fecha_consulta": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "asesor_academico": asesor_academico, "curso": (st.session_state.selected_canvas_course_name or curso_manual), "semana": semana_analisis, "total_estudiantes": len(analyzed), "bajo": counts.get("Bajo", 0), "moderado": counts.get("Moderado", 0), "alto": counts.get("Alto", 0), "fuente_datos": "reporte manual"}])
+            append_rows(st.session_state.db, "Consultas_Canvas", [make_consulta_row(idc, analyzed, asesor_academico, periodo_analisis, (st.session_state.selected_canvas_course_name or curso_manual), st.session_state.selected_canvas_course_id, seccion_manual, semana_analisis, "reporte manual")])
             st.success("Análisis ejecutado y registrado en historial.")
 
     with st.expander("Extracción básica desde Canvas", expanded=True):
@@ -1258,7 +1346,7 @@ with tabs[2]:
                 try:
                     client = st.session_state.canvas_client or CanvasClient(url, token)
                     users = client.course_metrics(course_id, course_name)
-                    analyzed = standardize_analysis_input(users, st.session_state.db, course_name, semana_analisis, asesor_academico)
+                    analyzed = standardize_analysis_input(users, st.session_state.db, course_name, semana_analisis, asesor_academico, periodo_analisis, course_id, seccion_manual, "")
                     analyzed = apply_bienestar_to_analysis(analyzed, st.session_state.db)
                     st.session_state.analysis_df = analyzed
                     st.session_state.db = upsert_students_from_analysis(st.session_state.db, analyzed)
@@ -1269,7 +1357,7 @@ with tabs[2]:
                         rows.append(d)
                     append_rows(st.session_state.db, "Historial_Estudiantes", rows)
                     counts = analyzed["riesgo"].value_counts().to_dict()
-                    append_rows(st.session_state.db, "Consultas_Canvas", [{"id_consulta": idc, "fecha_consulta": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "asesor_academico": asesor_academico, "curso": course_name, "semana": semana_analisis, "total_estudiantes": len(analyzed), "bajo": counts.get("Bajo", 0), "moderado": counts.get("Moderado", 0), "alto": counts.get("Alto", 0), "fuente_datos": "Canvas API"}])
+                    append_rows(st.session_state.db, "Consultas_Canvas", [make_consulta_row(idc, analyzed, asesor_academico, periodo_analisis, course_name, course_id, seccion_manual, semana_analisis, "Canvas API")])
                     st.success("Análisis ejecutado desde Canvas y registrado en historial. Si Canvas no expone algún dato, la app lo toma como alerta para evitar falsos riesgos bajos.")
                     st.dataframe(st.session_state.analysis_df, use_container_width=True)
                 except Exception as e:
@@ -1283,12 +1371,25 @@ with tabs[3]:
     if df.empty:
         st.warning("Primero ejecutá un análisis desde la pestaña Canvas / Datos.")
     else:
-        f1, f2 = st.columns(2)
+        f1, f2, f3 = st.columns(3)
         risk_filter = f1.multiselect("Filtrar por riesgo", ["Bajo", "Moderado", "Alto"], default=["Bajo", "Moderado", "Alto"])
-        section_filter = f2.multiselect("Filtrar por sección", sorted(df["seccion"].dropna().astype(str).unique()))
+        course_filter = f2.multiselect("Filtrar por curso", sorted(df["curso"].dropna().astype(str).unique())) if "curso" in df.columns else []
+        section_filter = f3.multiselect("Filtrar por sección", sorted(df["seccion"].dropna().astype(str).unique())) if "seccion" in df.columns else []
+        f4, f5, f6 = st.columns(3)
+        period_filter = f4.multiselect("Filtrar por periodo", sorted(df["periodo"].dropna().astype(str).unique())) if "periodo" in df.columns else []
+        academic_filter = f5.multiselect("Filtrar por asesor académico", sorted(df["asesor_academico"].dropna().astype(str).unique())) if "asesor_academico" in df.columns else []
+        bienestar_filter = f6.multiselect("Filtrar por asesor de bienestar", sorted(df["asesor_bienestar"].dropna().astype(str).unique())) if "asesor_bienestar" in df.columns else []
         dff = df[df["riesgo"].isin(risk_filter)]
+        if course_filter:
+            dff = dff[dff["curso"].astype(str).isin(course_filter)]
         if section_filter:
             dff = dff[dff["seccion"].astype(str).isin(section_filter)]
+        if period_filter:
+            dff = dff[dff["periodo"].astype(str).isin(period_filter)]
+        if academic_filter:
+            dff = dff[dff["asesor_academico"].astype(str).isin(academic_filter)]
+        if bienestar_filter:
+            dff = dff[dff["asesor_bienestar"].astype(str).isin(bienestar_filter)]
         total = len(dff)
         bajo = int((dff["riesgo"] == "Bajo").sum()); mod = int((dff["riesgo"] == "Moderado").sum()); alto = int((dff["riesgo"] == "Alto").sum())
         k1, k2, k3, k4 = st.columns(4)
@@ -1305,13 +1406,43 @@ with tabs[3]:
                 fig2 = px.histogram(dff, x="cambio", color="riesgo", title="Evolución respecto al registro anterior", color_discrete_map=RIESGO_COLOR)
                 st.plotly_chart(fig2, use_container_width=True)
         st.markdown("### Tabla de seguimiento")
-        cols = [c for c in ["carne", "nombre", "correo", "curso", "seccion", "actividades_pct", "promedio", "entregas_tarde", "ingresos_semana", "dias_inactivo", "horas_respuesta", "riesgo", "riesgo_anterior", "cambio", "motivo_detectado", "asesor_bienestar"] if c in dff.columns]
+        cols = [c for c in ["periodo", "carne", "nombre", "correo", "curso", "seccion", "asesor_academico", "asesor_bienestar", "semana", "actividades_pct", "promedio", "entregas_tarde", "ingresos_semana", "dias_inactivo", "horas_respuesta", "riesgo", "riesgo_anterior", "cambio", "motivo_detectado"] if c in dff.columns]
         st.dataframe(dff[cols], use_container_width=True, height=420)
+
+# -----------------------------------------------------------------------------
+# Institucional
+# -----------------------------------------------------------------------------
+with tabs[4]:
+    st.markdown("### Vista institucional multi-curso")
+    hist = st.session_state.db.get("Historial_Estudiantes", pd.DataFrame()).copy()
+    if hist.empty and not st.session_state.analysis_df.empty:
+        hist = st.session_state.analysis_df.copy()
+    if hist.empty:
+        st.warning("Aún no hay historial institucional. Ejecutá un análisis o leé la base desde Supabase.")
+    else:
+        hist = normalize_key_columns(hist)
+        for col in ["periodo", "curso", "seccion", "asesor_academico", "asesor_bienestar", "riesgo"]:
+            if col not in hist.columns:
+                hist[col] = ""
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Registros históricos", len(hist))
+        c2.metric("Cursos", hist["curso"].dropna().astype(str).nunique())
+        c3.metric("Secciones", hist["seccion"].dropna().astype(str).nunique())
+        c4.metric("Asesores académicos", hist["asesor_academico"].dropna().astype(str).nunique())
+        st.markdown("#### Resumen por curso, sección y asesor académico")
+        resumen = hist.groupby(["periodo", "curso", "seccion", "asesor_academico", "riesgo"], dropna=False).size().reset_index(name="estudiantes")
+        st.dataframe(resumen, use_container_width=True, height=300)
+        if not resumen.empty:
+            fig_inst = px.bar(resumen, x="curso", y="estudiantes", color="riesgo", barmode="group", facet_col="periodo", title="Riesgo por curso y periodo", color_discrete_map=RIESGO_COLOR)
+            st.plotly_chart(fig_inst, use_container_width=True)
+        st.markdown("#### Carga por asesor de bienestar")
+        bienestar = hist[hist["riesgo"].isin(["Moderado", "Alto"])].groupby(["asesor_bienestar", "curso", "seccion", "riesgo"], dropna=False).size().reset_index(name="casos")
+        st.dataframe(bienestar, use_container_width=True, height=260)
 
 # -----------------------------------------------------------------------------
 # Estudiante
 # -----------------------------------------------------------------------------
-with tabs[4]:
+with tabs[5]:
     df = st.session_state.analysis_df.copy()
     if df.empty:
         st.warning("No hay análisis activo.")
@@ -1333,7 +1464,7 @@ with tabs[4]:
 # -----------------------------------------------------------------------------
 # Mensajes
 # -----------------------------------------------------------------------------
-with tabs[5]:
+with tabs[6]:
     df = st.session_state.analysis_df.copy()
     if df.empty:
         st.warning("No hay análisis activo.")
@@ -1349,7 +1480,7 @@ with tabs[5]:
                     edited = st.text_area("Mensaje", msg, height=230, key=f"msg_{i}")
                     colx, coly = st.columns(2)
                     if colx.button("Registrar mensaje", key=f"regmsg_{i}"):
-                        append_rows(st.session_state.db, "Mensajes_Enviados", [{"fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "carne": row.get("carne"), "nombre": row.get("nombre"), "correo": row.get("correo"), "curso": row.get("curso"), "riesgo": row.get("riesgo"), "tipo_mensaje": f"Seguimiento {row.get('riesgo')}", "mensaje_generado": edited, "enviado_canvas": "No", "asesor_academico": asesor_academico}])
+                        append_rows(st.session_state.db, "Mensajes_Enviados", [{"fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "periodo": row.get("periodo"), "carne": row.get("carne"), "nombre": row.get("nombre"), "correo": row.get("correo"), "curso": row.get("curso"), "curso_id_canvas": row.get("curso_id_canvas"), "seccion": row.get("seccion"), "riesgo": row.get("riesgo"), "tipo_mensaje": f"Seguimiento {row.get('riesgo')}", "mensaje_generado": edited, "enviado_canvas": "No", "asesor_academico": asesor_academico, "asesor_bienestar": row.get("asesor_bienestar")}])
                         st.success("Mensaje registrado en la base.")
                     if coly.button("Enviar por Canvas", key=f"send_{i}"):
                         client = st.session_state.canvas_client or (CanvasClient(url, token) if url and token else None)
@@ -1363,7 +1494,7 @@ with tabs[5]:
 # -----------------------------------------------------------------------------
 # Derivaciones
 # -----------------------------------------------------------------------------
-with tabs[6]:
+with tabs[7]:
     df = st.session_state.analysis_df.copy()
     if df.empty:
         st.warning("No hay análisis activo.")
@@ -1389,7 +1520,7 @@ with tabs[6]:
             c3.metric("Riesgo alto", int((derivables["riesgo"] == "Alto").sum()))
 
             st.dataframe(
-                derivables[[c for c in ["carne", "nombre", "correo", "curso", "seccion", "riesgo", "cambio", "asesor_bienestar", "motivo_detectado"] if c in derivables.columns]],
+                derivables[[c for c in ["periodo", "carne", "nombre", "correo", "curso", "seccion", "asesor_academico", "riesgo", "cambio", "asesor_bienestar", "motivo_detectado"] if c in derivables.columns]],
                 use_container_width=True,
                 height=280,
             )
@@ -1421,11 +1552,14 @@ with tabs[6]:
                         report_rows.append({
                             "id_derivacion": datetime.now().strftime("D%Y%m%d%H%M%S") + str(i),
                             "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "periodo": row.get("periodo"),
                             "carne": row.get("carne"),
                             "nombre": row.get("nombre"),
                             "correo": row.get("correo"),
                             "curso": row.get("curso"),
+                            "curso_id_canvas": row.get("curso_id_canvas"),
                             "seccion": row.get("seccion"),
+                            "seccion_id_canvas": row.get("seccion_id_canvas"),
                             "riesgo": row.get("riesgo"),
                             "prioridad": prioridad,
                             "asesor_bienestar": advisor,
@@ -1450,7 +1584,7 @@ with tabs[6]:
 # -----------------------------------------------------------------------------
 # Export
 # -----------------------------------------------------------------------------
-with tabs[7]:
+with tabs[8]:
     st.markdown("### Exportar base actualizada")
     if (st.session_state.db.get("Estudiantes", pd.DataFrame()).empty) and not st.session_state.db.get("Historial_Estudiantes", pd.DataFrame()).empty:
         st.session_state.db["Estudiantes"] = latest_students_from_history(st.session_state.db)

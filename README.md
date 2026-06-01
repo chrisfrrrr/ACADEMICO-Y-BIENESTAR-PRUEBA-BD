@@ -40,3 +40,8 @@ La tabla compacta utilizada es `ave_base_datos`, donde cada hoja se guarda como 
 La pestaña **Derivaciones** ahora genera paquetes organizados por asesor de bienestar, curso/sección, asesor académico remitente y nivel de riesgo. Cada documento de derivación incluye el contexto académico completo del caso: periodo, curso, ID Canvas del curso, sección, ID Canvas de sección, semana de análisis, asesor académico remitente, asesor de bienestar asignado y nivel de prioridad.
 
 El ZIP generado incluye un listado general de todas las derivaciones y un listado específico dentro de la carpeta de cada asesor de bienestar.
+
+
+## Versión 14 - Supabase multi-tabla
+
+Esta versión guarda la información en tablas separadas de Supabase: estudiantes, asesores_bienestar, historial_estudiantes, derivaciones, mensajes_enviados, consultas_canvas y configuracion. La tabla ave_base_datos queda como respaldo. Para configurar la conexión, revisar INSTRUCCIONES_V14_SUPABASE_MULTITABLA.txt.

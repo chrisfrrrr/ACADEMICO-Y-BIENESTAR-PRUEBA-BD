@@ -405,8 +405,32 @@ def apply_bienestar_to_analysis(analysis_df: pd.DataFrame, db: Dict[str, pd.Data
     return df
 
 # -----------------------------------------------------------------------------
-# Supabase online database helpers
+# Supabase online database helpers - v14 multi-tabla
 # -----------------------------------------------------------------------------
+SUPABASE_COMPACT_TABLE = "ave_base_datos"
+
+TABLE_TO_SHEET = {
+    "estudiantes": "Estudiantes",
+    "asesores_bienestar": "Asesores_Bienestar",
+    "historial_estudiantes": "Historial_Estudiantes",
+    "derivaciones": "Derivaciones",
+    "mensajes_enviados": "Mensajes_Enviados",
+    "consultas_canvas": "Consultas_Canvas",
+    "configuracion": "Configuracion",
+}
+
+# Columnas reales en Supabase. Se usan para evitar enviar campos que no existen.
+SUPABASE_COLUMNS = {
+    "estudiantes": ["periodo", "carne", "nombre", "correo", "telefono", "carrera", "estado", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "semana", "asesor_academico", "asesor_bienestar", "riesgo", "prioridad", "ultimo_promedio", "ultimo_actividades_pct", "ultimo_dias_inactivo", "ultima_fecha_consulta", "canvas_user_id", "login_id"],
+    "asesores_bienestar": ["nombre", "correo", "telefono", "estado", "observaciones"],
+    "historial_estudiantes": ["fecha_consulta", "periodo", "carne", "nombre", "correo", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "semana", "asesor_academico", "asesor_bienestar", "actividades_pct", "promedio", "entregas_tarde", "entregas_pendientes", "entregas_realizadas", "total_actividades", "ingresos_semana", "dias_inactivo", "ultima_actividad", "riesgo", "riesgo_anterior", "cambio", "motivo_detectado", "canvas_user_id"],
+    "derivaciones": ["id_derivacion", "fecha_derivacion", "periodo", "carne", "nombre", "correo", "telefono", "carrera", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "semana", "asesor_academico", "asesor_bienestar", "riesgo", "prioridad", "motivo_derivacion", "acciones_previas", "observaciones", "estado_derivacion", "archivo_derivacion", "paquete_derivacion"],
+    "mensajes_enviados": ["fecha", "periodo", "carne", "nombre", "correo", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "semana", "asesor_academico", "asesor_bienestar", "riesgo", "tipo_mensaje", "asunto", "mensaje_generado", "enviado_canvas", "estado_envio", "canvas_message_id"],
+    "consultas_canvas": ["fecha_consulta", "periodo", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "semana", "asesor_academico", "total_estudiantes", "bajo", "moderado", "alto", "sin_datos", "fuente", "observaciones"],
+    "configuracion": ["parametro", "valor", "descripcion"],
+}
+
+
 def clean_records_for_json(df: pd.DataFrame) -> List[Dict]:
     """Convierte un DataFrame a registros JSON seguros para Supabase."""
     if df is None or df.empty:
@@ -435,14 +459,307 @@ def get_supabase_client(url: str, key: str):
     return create_client(url.strip(), key.strip())
 
 
-def read_db_from_supabase(url: str, key: str) -> Dict[str, pd.DataFrame]:
-    """Lee la base completa desde una tabla JSONB en Supabase."""
+def _safe_datetime_text(value):
+    """Devuelve fecha como texto ISO o None para campos timestamptz."""
+    if pd.isna(value):
+        return None
+    txt = str(value).strip()
+    if txt.lower() in ["", "nan", "none", "nat"]:
+        return None
+    try:
+        return pd.to_datetime(txt).isoformat()
+    except Exception:
+        return None
+
+
+def _safe_int(value):
+    if pd.isna(value):
+        return None
+    try:
+        return int(float(value))
+    except Exception:
+        return None
+
+
+def _safe_num(value):
+    if pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _safe_bool(value):
+    if pd.isna(value):
+        return False
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ["si", "sí", "true", "1", "enviado", "yes"]
+
+
+def _clean_record_dict(record: Dict) -> Dict:
+    out = {}
+    for k, v in record.items():
+        if pd.isna(v) if not isinstance(v, (list, dict, tuple)) else False:
+            out[k] = None
+        elif isinstance(v, (np.integer,)):
+            out[k] = int(v)
+        elif isinstance(v, (np.floating,)):
+            out[k] = float(v)
+        elif hasattr(v, "isoformat") and not isinstance(v, str):
+            out[k] = v.isoformat()
+        else:
+            out[k] = v
+    return out
+
+
+def _chunk(records: List[Dict], size: int = 400):
+    for i in range(0, len(records), size):
+        yield records[i:i+size]
+
+
+def _delete_all_rows(sb, table: str):
+    """Vacía una tabla manejada por la app sin usar TRUNCATE/RPC."""
+    try:
+        if table == "configuracion":
+            sb.table(table).delete().neq("parametro", "__never__").execute()
+        elif table == "ave_base_datos":
+            sb.table(table).delete().neq("sheet_name", "__never__").execute()
+        else:
+            sb.table(table).delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+    except Exception:
+        # Si la tabla está vacía o PostgREST no borra nada, continuamos.
+        pass
+
+
+def _sheet_to_supabase_records(sheet: str, df: pd.DataFrame) -> Tuple[str, List[Dict]]:
+    """Convierte una hoja interna de la app al formato de la tabla Supabase."""
+    df = normalize_key_columns(df.copy()) if df is not None else pd.DataFrame()
+    df = df.dropna(how="all") if not df.empty else df
+
+    if sheet == "Estudiantes":
+        table = "estudiantes"
+        if df.empty:
+            return table, []
+        # Enriquecer último estado desde historial cuando existan datos.
+        for c in ["riesgo", "prioridad", "ultimo_promedio", "ultimo_actividades_pct", "ultimo_dias_inactivo", "ultima_fecha_consulta", "semana", "estado", "login_id"]:
+            if c not in df.columns:
+                df[c] = np.nan
+        hist = st.session_state.get("db", {}).get("Historial_Estudiantes", pd.DataFrame()) if "db" in st.session_state else pd.DataFrame()
+        if isinstance(hist, pd.DataFrame) and not hist.empty:
+            h = normalize_key_columns(hist.copy())
+            if "fecha" in h.columns:
+                h["fecha_sort"] = pd.to_datetime(h["fecha"], errors="coerce")
+            else:
+                h["fecha_sort"] = pd.NaT
+            h["ctx"] = build_context_key(h)
+            latest = h.sort_values("fecha_sort").drop_duplicates("ctx", keep="last")
+            latest_map = latest.set_index("ctx").to_dict("index")
+            df["ctx"] = build_context_key(df)
+            for idx, row in df.iterrows():
+                m = latest_map.get(row["ctx"], {})
+                if m:
+                    df.at[idx, "riesgo"] = m.get("riesgo", df.at[idx, "riesgo"])
+                    df.at[idx, "prioridad"] = "Alta" if m.get("riesgo") == "Alto" else ("Media" if m.get("riesgo") == "Moderado" else df.at[idx, "prioridad"])
+                    df.at[idx, "ultimo_promedio"] = m.get("promedio")
+                    df.at[idx, "ultimo_actividades_pct"] = m.get("actividades_pct")
+                    df.at[idx, "ultimo_dias_inactivo"] = m.get("dias_inactivo")
+                    df.at[idx, "ultima_fecha_consulta"] = _safe_datetime_text(m.get("fecha"))
+                    df.at[idx, "semana"] = m.get("semana", df.at[idx, "semana"])
+            df.drop(columns=["ctx"], inplace=True, errors="ignore")
+        records = []
+        for _, r in df.iterrows():
+            rec = {c: r.get(c) for c in SUPABASE_COLUMNS[table] if c in df.columns}
+            rec["semana"] = _safe_int(rec.get("semana"))
+            rec["ultimo_promedio"] = _safe_num(rec.get("ultimo_promedio"))
+            rec["ultimo_actividades_pct"] = _safe_num(rec.get("ultimo_actividades_pct"))
+            rec["ultimo_dias_inactivo"] = _safe_int(rec.get("ultimo_dias_inactivo"))
+            rec["ultima_fecha_consulta"] = _safe_datetime_text(rec.get("ultima_fecha_consulta"))
+            if not rec.get("nombre"):
+                continue
+            records.append(_clean_record_dict(rec))
+        return table, records
+
+    if sheet == "Asesores_Bienestar":
+        table = "asesores_bienestar"
+        records = []
+        if df.empty:
+            return table, []
+        for _, r in df.iterrows():
+            rec = {
+                "nombre": r.get("nombre"),
+                "correo": r.get("correo"),
+                "telefono": r.get("telefono"),
+                "estado": r.get("estado", "Activo"),
+                "observaciones": r.get("observaciones"),
+            }
+            if rec.get("nombre"):
+                records.append(_clean_record_dict(rec))
+        return table, records
+
+    if sheet == "Historial_Estudiantes":
+        table = "historial_estudiantes"
+        if df.empty:
+            return table, []
+        records = []
+        for _, r in df.iterrows():
+            rec = {
+                "fecha_consulta": _safe_datetime_text(r.get("fecha")),
+                "periodo": r.get("periodo"),
+                "carne": r.get("carne"),
+                "nombre": r.get("nombre"),
+                "correo": r.get("correo"),
+                "curso": r.get("curso"),
+                "curso_id_canvas": r.get("curso_id_canvas"),
+                "seccion": r.get("seccion"),
+                "seccion_id_canvas": r.get("seccion_id_canvas"),
+                "semana": _safe_int(r.get("semana")),
+                "asesor_academico": r.get("asesor_academico"),
+                "asesor_bienestar": r.get("asesor_bienestar"),
+                "actividades_pct": _safe_num(r.get("actividades_pct")),
+                "promedio": _safe_num(r.get("promedio")),
+                "entregas_tarde": _safe_int(r.get("entregas_tarde")),
+                "entregas_pendientes": _safe_int(r.get("entregas_pendientes")),
+                "ingresos_semana": _safe_int(r.get("ingresos_semana")),
+                "dias_inactivo": _safe_int(r.get("dias_inactivo")),
+                "riesgo": r.get("riesgo"),
+                "riesgo_anterior": r.get("riesgo_anterior"),
+                "cambio": r.get("cambio"),
+                "motivo_detectado": r.get("motivo_detectado"),
+                "canvas_user_id": r.get("canvas_user_id"),
+            }
+            if rec.get("nombre"):
+                records.append(_clean_record_dict(rec))
+        return table, records
+
+    if sheet == "Derivaciones":
+        table = "derivaciones"
+        if df.empty:
+            return table, []
+        records = []
+        for _, r in df.iterrows():
+            rec = {
+                "id_derivacion": r.get("id_derivacion"),
+                "fecha_derivacion": _safe_datetime_text(r.get("fecha")),
+                "periodo": r.get("periodo"),
+                "carne": r.get("carne"),
+                "nombre": r.get("nombre"),
+                "correo": r.get("correo"),
+                "curso": r.get("curso"),
+                "curso_id_canvas": r.get("curso_id_canvas"),
+                "seccion": r.get("seccion"),
+                "seccion_id_canvas": r.get("seccion_id_canvas"),
+                "semana": _safe_int(r.get("semana")),
+                "asesor_academico": r.get("asesor_academico"),
+                "asesor_bienestar": r.get("asesor_bienestar"),
+                "riesgo": r.get("riesgo"),
+                "prioridad": r.get("prioridad"),
+                "motivo_derivacion": r.get("motivo"),
+                "acciones_previas": r.get("acciones_previas"),
+                "observaciones": r.get("observaciones"),
+                "estado_derivacion": r.get("estado_derivacion", "Pendiente"),
+            }
+            if rec.get("nombre"):
+                records.append(_clean_record_dict(rec))
+        return table, records
+
+    if sheet == "Mensajes_Enviados":
+        table = "mensajes_enviados"
+        if df.empty:
+            return table, []
+        records = []
+        for _, r in df.iterrows():
+            rec = {
+                "fecha": _safe_datetime_text(r.get("fecha")),
+                "periodo": r.get("periodo"),
+                "carne": r.get("carne"),
+                "nombre": r.get("nombre"),
+                "correo": r.get("correo"),
+                "curso": r.get("curso"),
+                "curso_id_canvas": r.get("curso_id_canvas"),
+                "seccion": r.get("seccion"),
+                "seccion_id_canvas": r.get("seccion_id_canvas"),
+                "semana": _safe_int(r.get("semana")),
+                "asesor_academico": r.get("asesor_academico"),
+                "asesor_bienestar": r.get("asesor_bienestar"),
+                "riesgo": r.get("riesgo"),
+                "tipo_mensaje": r.get("tipo_mensaje"),
+                "mensaje_generado": r.get("mensaje_generado"),
+                "enviado_canvas": _safe_bool(r.get("enviado_canvas")),
+            }
+            if rec.get("nombre"):
+                records.append(_clean_record_dict(rec))
+        return table, records
+
+    if sheet == "Consultas_Canvas":
+        table = "consultas_canvas"
+        if df.empty:
+            return table, []
+        records = []
+        for _, r in df.iterrows():
+            rec = {
+                "fecha_consulta": _safe_datetime_text(r.get("fecha_consulta")),
+                "periodo": r.get("periodo"),
+                "curso": r.get("curso"),
+                "curso_id_canvas": r.get("curso_id_canvas"),
+                "seccion": r.get("seccion"),
+                "semana": _safe_int(r.get("semana")),
+                "asesor_academico": r.get("asesor_academico"),
+                "total_estudiantes": _safe_int(r.get("total_estudiantes")),
+                "bajo": _safe_int(r.get("bajo")),
+                "moderado": _safe_int(r.get("moderado")),
+                "alto": _safe_int(r.get("alto")),
+                "fuente": r.get("fuente_datos", r.get("fuente")),
+            }
+            records.append(_clean_record_dict(rec))
+        return table, records
+
+    if sheet == "Configuracion":
+        table = "configuracion"
+        if df.empty:
+            return table, []
+        records = []
+        for _, r in df.iterrows():
+            rec = {"parametro": r.get("parametro"), "valor": r.get("valor"), "descripcion": r.get("descripcion")}
+            if rec.get("parametro"):
+                records.append(_clean_record_dict(rec))
+        return table, records
+
+    return "", []
+
+
+def _supabase_records_to_sheet(table: str, records: List[Dict]) -> Tuple[str, pd.DataFrame]:
+    sheet = TABLE_TO_SHEET.get(table)
+    if not sheet:
+        return "", pd.DataFrame()
+    df = pd.DataFrame(records or [])
+    if df.empty:
+        return sheet, pd.DataFrame(columns=SHEETS[sheet])
+    # Quitar columnas técnicas de Supabase.
+    df.drop(columns=["id", "created_at", "updated_at"], inplace=True, errors="ignore")
+    if table == "historial_estudiantes" and "fecha_consulta" in df.columns:
+        df.rename(columns={"fecha_consulta": "fecha"}, inplace=True)
+    if table == "derivaciones":
+        df.rename(columns={"fecha_derivacion": "fecha", "motivo_derivacion": "motivo"}, inplace=True)
+    if table == "consultas_canvas":
+        df.rename(columns={"fuente": "fuente_datos"}, inplace=True)
+        if "id_consulta" not in df.columns:
+            df["id_consulta"] = ""
+    for col in SHEETS[sheet]:
+        if col not in df.columns:
+            df[col] = np.nan
+    return sheet, normalize_key_columns(df[SHEETS[sheet]])
+
+
+def read_db_from_supabase_compact(url: str, key: str) -> Dict[str, pd.DataFrame]:
+    """Compatibilidad v12: lee la base desde ave_base_datos JSONB."""
     sb = get_supabase_client(url, key)
     db = empty_db()
     try:
-        res = sb.table(SUPABASE_TABLE).select("sheet_name,records,updated_at,updated_by").in_("sheet_name", list(SHEETS.keys())).execute()
+        res = sb.table(SUPABASE_COMPACT_TABLE).select("sheet_name,records,updated_at,updated_by").in_("sheet_name", list(SHEETS.keys())).execute()
     except Exception as e:
-        raise RuntimeError(f"No se pudo leer Supabase. Verificá que exista la tabla {SUPABASE_TABLE}. Detalle: {e}")
+        raise RuntimeError(f"No se pudo leer Supabase. Verificá que exista la tabla {SUPABASE_COMPACT_TABLE}. Detalle: {e}")
     rows = res.data or []
     for row in rows:
         sheet = row.get("sheet_name")
@@ -457,8 +774,35 @@ def read_db_from_supabase(url: str, key: str) -> Dict[str, pd.DataFrame]:
     return normalize_db_keys(db)
 
 
-def save_db_to_supabase(db: Dict[str, pd.DataFrame], url: str, key: str, updated_by: str = "") -> None:
-    """Guarda cada hoja de la base como un JSON en Supabase."""
+def read_db_from_supabase(url: str, key: str) -> Dict[str, pd.DataFrame]:
+    """Lee la base desde las tablas normalizadas v13/v14. Si están vacías, intenta compatibilidad v12."""
+    sb = get_supabase_client(url, key)
+    db = empty_db()
+    found_any = False
+    for table, sheet in TABLE_TO_SHEET.items():
+        try:
+            res = sb.table(table).select("*").execute()
+        except Exception as e:
+            raise RuntimeError(f"No se pudo leer la tabla '{table}'. Verificá que ejecutaste el SQL v13 multi-curso. Detalle: {e}")
+        records = res.data or []
+        if records:
+            found_any = True
+        _, df = _supabase_records_to_sheet(table, records)
+        if sheet:
+            db[sheet] = df
+    if not found_any:
+        # Si recién migraron desde v12 y la tabla compacta tenía datos, permite leerlos.
+        try:
+            compact = read_db_from_supabase_compact(url, key)
+            if any(not d.empty for d in compact.values()):
+                return compact
+        except Exception:
+            pass
+    return normalize_db_keys(db)
+
+
+def save_db_to_supabase_compact(db: Dict[str, pd.DataFrame], url: str, key: str, updated_by: str = "") -> None:
+    """Guarda copia compacta de respaldo en ave_base_datos."""
     sb = get_supabase_client(url, key)
     payloads = []
     now = datetime.utcnow().isoformat() + "Z"
@@ -476,26 +820,63 @@ def save_db_to_supabase(db: Dict[str, pd.DataFrame], url: str, key: str, updated
             "updated_at": now,
             "updated_by": updated_by or "Streamlit Cloud",
         })
+    sb.table(SUPABASE_COMPACT_TABLE).upsert(payloads, on_conflict="sheet_name").execute()
+
+
+def save_db_to_supabase(db: Dict[str, pd.DataFrame], url: str, key: str, updated_by: str = "") -> None:
+    """Guarda la base en tablas Supabase normalizadas y deja copia compacta de respaldo."""
+    sb = get_supabase_client(url, key)
+    db = normalize_db_keys(db)
+    # Si Estudiantes está vacío, reconstruirlo desde Historial.
+    if db.get("Estudiantes", pd.DataFrame()).empty and not db.get("Historial_Estudiantes", pd.DataFrame()).empty:
+        db["Estudiantes"] = latest_students_from_history(db)
+
+    # Guardado normalizado: se reescriben tablas manejadas por la app para evitar duplicados por contexto.
+    for table in ["asesores_bienestar", "estudiantes", "historial_estudiantes", "derivaciones", "mensajes_enviados", "consultas_canvas", "configuracion"]:
+        _delete_all_rows(sb, table)
+
+    for sheet in SHEETS.keys():
+        table, records = _sheet_to_supabase_records(sheet, db.get(sheet, pd.DataFrame(columns=SHEETS[sheet])))
+        if not table or not records:
+            continue
+        for part in _chunk(records):
+            sb.table(table).insert(part).execute()
+
+    # Mantiene respaldo/compatibilidad con v12.
     try:
-        sb.table(SUPABASE_TABLE).upsert(payloads, on_conflict="sheet_name").execute()
-    except Exception as e:
-        raise RuntimeError(f"No se pudo guardar en Supabase: {e}")
+        save_db_to_supabase_compact(db, url, key, updated_by)
+    except Exception:
+        pass
 
 
 def supabase_status(url: str, key: str) -> pd.DataFrame:
-    """Devuelve estado de filas por hoja en Supabase."""
+    """Devuelve estado de filas por tabla Supabase v13/v14."""
     sb = get_supabase_client(url, key)
-    res = sb.table(SUPABASE_TABLE).select("sheet_name,records,updated_at,updated_by").execute()
     rows = []
-    for item in (res.data or []):
-        records = item.get("records") or []
-        rows.append({
-            "hoja": item.get("sheet_name"),
-            "registros": len(records),
-            "actualizado": item.get("updated_at"),
-            "actualizado_por": item.get("updated_by"),
-        })
-    return pd.DataFrame(rows).sort_values("hoja") if rows else pd.DataFrame(columns=["hoja", "registros", "actualizado", "actualizado_por"])
+    for table, sheet in TABLE_TO_SHEET.items():
+        try:
+            res = sb.table(table).select("*", count="exact").limit(1).execute()
+            count = getattr(res, "count", None)
+            if count is None:
+                count = len(res.data or [])
+            rows.append({"tabla": table, "equivalente_excel": sheet, "registros": count})
+        except Exception as e:
+            rows.append({"tabla": table, "equivalente_excel": sheet, "registros": "ERROR", "detalle": str(e)})
+    # Estado de respaldo compacto
+    try:
+        res = sb.table(SUPABASE_COMPACT_TABLE).select("sheet_name,records,updated_at,updated_by").execute()
+        for item in (res.data or []):
+            records = item.get("records") or []
+            rows.append({
+                "tabla": SUPABASE_COMPACT_TABLE,
+                "equivalente_excel": item.get("sheet_name"),
+                "registros": len(records),
+                "actualizado": item.get("updated_at"),
+                "actualizado_por": item.get("updated_by"),
+            })
+    except Exception:
+        pass
+    return pd.DataFrame(rows)
 
 
 # -----------------------------------------------------------------------------

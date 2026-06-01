@@ -1,0 +1,59 @@
+AVE Seguimiento PRO v14 - Supabase multi-tabla
+
+Esta versión ya no usa únicamente la tabla compacta ave_base_datos.
+Ahora guarda y lee la información desde las tablas normalizadas:
+
+- estudiantes
+- asesores_bienestar
+- historial_estudiantes
+- derivaciones
+- mensajes_enviados
+- consultas_canvas
+- configuracion
+
+La tabla ave_base_datos se conserva como respaldo/compatibilidad.
+
+PASOS PARA ENLAZAR LA APP CON SUPABASE EN STREAMLIT CLOUD
+
+1. En Supabase verificá que existan las tablas anteriores.
+   Si no existen, ejecutá el archivo:
+   supabase_schema_v14_multicurso.sql
+   desde Supabase > SQL Editor > New query > Run.
+
+2. En Supabase obtené estos datos:
+   Project URL
+   service_role key
+
+   Usualmente están en:
+   Project Settings > API
+
+3. En Streamlit Cloud entrá a:
+   App > Settings > Secrets
+
+4. Pegá este bloque:
+
+[supabase]
+url = "https://TU-PROYECTO.supabase.co"
+service_role_key = "TU_SERVICE_ROLE_KEY"
+
+5. Guardá los Secrets y reiniciá la app.
+
+6. En la app entrá a:
+   Base de datos > Usar Supabase en línea
+
+7. Presioná:
+   Probar Supabase
+
+   Debe mostrar el conteo por tabla.
+
+8. Para migrar o guardar información:
+   - Si tenés datos en sesión, presioná Guardar base actual en Supabase.
+   - La app guardará cada hoja en su tabla correspondiente.
+   - También guardará una copia compacta en ave_base_datos.
+
+NOTAS IMPORTANTES
+
+- Usá service_role_key solo en Streamlit Secrets. Nunca la subás a GitHub.
+- La app utiliza RLS con service_role_key, por eso no necesitás crear policies públicas.
+- El botón Leer base desde Supabase ahora lee las tablas normalizadas.
+- Si las tablas normalizadas están vacías, la app intenta leer ave_base_datos como respaldo.

@@ -1,0 +1,21 @@
+Versión v16 - Corrección de guardado en Supabase por nombres vacíos
+
+Esta versión corrige el error:
+null value in column "nombre" of relation "estudiantes" violates not-null constraint
+
+Causa:
+Algunos registros obtenidos desde Canvas o reconstruidos desde el historial traen carné/ID, curso y riesgo, pero no traen nombre. Supabase exige que la columna nombre no sea nula.
+
+Corrección aplicada:
+- La app detecta valores vacíos reales: None, NaN, null, cadenas vacías y <NA>.
+- Si Canvas no devuelve nombre, la app genera un nombre trazable:
+  Estudiante sin nombre - <carne>
+  o Estudiante sin nombre - Canvas <canvas_user_id>
+- También normaliza campos de texto antes de guardar.
+- No requiere modificar la estructura de Supabase.
+
+Uso:
+1. Reemplazar la app anterior por esta versión.
+2. Subir los cambios a GitHub.
+3. Hacer redeploy en Streamlit Cloud.
+4. Volver a presionar Guardar cambios en Supabase.

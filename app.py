@@ -459,6 +459,49 @@ def get_supabase_client(url: str, key: str):
     return create_client(url.strip(), key.strip())
 
 
+
+
+def _is_blank(value) -> bool:
+    """Identifica valores vacíos reales, incluyendo NaN de pandas/numpy y textos vacíos."""
+    try:
+        if pd.isna(value):
+            return True
+    except Exception:
+        pass
+    txt = str(value).strip()
+    return txt == "" or txt.lower() in ["nan", "none", "null", "nat", "<na>"]
+
+
+def _safe_text(value, default=None):
+    if _is_blank(value):
+        return default
+    txt = str(value).strip()
+    # Corrige casos típicos de Excel: 262786.0 -> 262786
+    if re.fullmatch(r"\d+\.0", txt):
+        txt = txt[:-2]
+    return txt
+
+
+def _fallback_nombre(rec: Dict) -> str:
+    """Supabase exige nombre NOT NULL; si Canvas no devuelve nombre, genera uno trazable."""
+    nombre = _safe_text(rec.get("nombre"))
+    if nombre:
+        return nombre
+    carne = _safe_text(rec.get("carne"))
+    correo = _safe_text(rec.get("correo"))
+    canvas_user_id = _safe_text(rec.get("canvas_user_id"))
+    login_id = _safe_text(rec.get("login_id"))
+    if correo:
+        return correo
+    if carne:
+        return f"Estudiante sin nombre - {carne}"
+    if login_id:
+        return f"Estudiante sin nombre - {login_id}"
+    if canvas_user_id:
+        return f"Estudiante sin nombre - Canvas {canvas_user_id}"
+    return "Estudiante sin nombre"
+
+
 def _safe_datetime_text(value):
     """Devuelve fecha como texto ISO o None para campos timestamptz."""
     if pd.isna(value):
@@ -510,7 +553,10 @@ def _clean_record_dict(record: Dict) -> Dict:
         elif hasattr(v, "isoformat") and not isinstance(v, str):
             out[k] = v.isoformat()
         else:
-            out[k] = v
+            if isinstance(v, str) and v.strip().lower() in ["", "nan", "none", "null", "nat", "<na>"]:
+                out[k] = None
+            else:
+                out[k] = v
     return out
 
 
@@ -581,13 +627,16 @@ def _sheet_to_supabase_records(sheet: str, df: pd.DataFrame) -> Tuple[str, List[
         records = []
         for _, r in df.iterrows():
             rec = {c: r.get(c) for c in SUPABASE_COLUMNS[table] if c in df.columns}
+            # Normalización obligatoria antes de enviar a Supabase
+            rec["nombre"] = _fallback_nombre(rec)
+            for _c in ["carne", "correo", "periodo", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "asesor_academico", "asesor_bienestar", "riesgo", "prioridad", "estado", "canvas_user_id", "login_id"]:
+                if _c in rec:
+                    rec[_c] = _safe_text(rec.get(_c))
             rec["semana"] = _safe_int(rec.get("semana"))
             rec["ultimo_promedio"] = _safe_num(rec.get("ultimo_promedio"))
             rec["ultimo_actividades_pct"] = _safe_num(rec.get("ultimo_actividades_pct"))
             rec["ultimo_dias_inactivo"] = _safe_int(rec.get("ultimo_dias_inactivo"))
             rec["ultima_fecha_consulta"] = _safe_datetime_text(rec.get("ultima_fecha_consulta"))
-            if not rec.get("nombre"):
-                continue
             records.append(_clean_record_dict(rec))
         return table, records
 
@@ -639,8 +688,11 @@ def _sheet_to_supabase_records(sheet: str, df: pd.DataFrame) -> Tuple[str, List[
                 "motivo_detectado": r.get("motivo_detectado"),
                 "canvas_user_id": r.get("canvas_user_id"),
             }
-            if rec.get("nombre"):
-                records.append(_clean_record_dict(rec))
+            rec["nombre"] = _fallback_nombre(rec)
+            for _c in ["carne", "correo", "periodo", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "asesor_academico", "asesor_bienestar", "riesgo", "riesgo_anterior", "cambio", "motivo_detectado", "canvas_user_id"]:
+                if _c in rec:
+                    rec[_c] = _safe_text(rec.get(_c))
+            records.append(_clean_record_dict(rec))
         return table, records
 
     if sheet == "Derivaciones":
@@ -670,8 +722,11 @@ def _sheet_to_supabase_records(sheet: str, df: pd.DataFrame) -> Tuple[str, List[
                 "observaciones": r.get("observaciones"),
                 "estado_derivacion": r.get("estado_derivacion", "Pendiente"),
             }
-            if rec.get("nombre"):
-                records.append(_clean_record_dict(rec))
+            rec["nombre"] = _fallback_nombre(rec)
+            for _c in ["carne", "correo", "periodo", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "asesor_academico", "asesor_bienestar", "riesgo", "prioridad", "motivo_derivacion", "acciones_previas", "observaciones", "estado_derivacion"]:
+                if _c in rec:
+                    rec[_c] = _safe_text(rec.get(_c))
+            records.append(_clean_record_dict(rec))
         return table, records
 
     if sheet == "Mensajes_Enviados":
@@ -698,8 +753,11 @@ def _sheet_to_supabase_records(sheet: str, df: pd.DataFrame) -> Tuple[str, List[
                 "mensaje_generado": r.get("mensaje_generado"),
                 "enviado_canvas": _safe_bool(r.get("enviado_canvas")),
             }
-            if rec.get("nombre"):
-                records.append(_clean_record_dict(rec))
+            rec["nombre"] = _fallback_nombre(rec)
+            for _c in ["carne", "correo", "periodo", "curso", "curso_id_canvas", "seccion", "seccion_id_canvas", "asesor_academico", "asesor_bienestar", "riesgo", "tipo_mensaje", "asunto", "mensaje_generado", "estado_envio", "canvas_message_id"]:
+                if _c in rec:
+                    rec[_c] = _safe_text(rec.get(_c))
+            records.append(_clean_record_dict(rec))
         return table, records
 
     if sheet == "Consultas_Canvas":

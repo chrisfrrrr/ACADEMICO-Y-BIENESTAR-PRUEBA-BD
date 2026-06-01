@@ -853,8 +853,8 @@ def make_derivation_doc(row: pd.Series, asesor_academico: str, asesor_bienestar:
 
     sections = [
         ("1. Datos del estudiante", [("Nombre del estudiante", row.get("nombre", "")), ("Carné", row.get("carne", "")), ("Carrera", row.get("carrera", "")), ("Trimestre", row.get("trimestre", "")), ("Correo electrónico", row.get("correo", "")), ("Teléfono", row.get("telefono", ""))]),
-        ("2. Datos del remitente", [("Nombre del asesor académico", asesor_academico), ("Asesor de bienestar receptor", asesor_bienestar), ("Curso", row.get("curso", "")), ("Sección", row.get("seccion", ""))]),
-        ("3. Motivo de la derivación", [("Nivel de riesgo", risk), ("Motivo detectado", row.get("motivo_detectado", ""))]),
+        ("2. Contexto académico y remitente", [("Periodo / cohorte", row.get("periodo", "")), ("Curso", row.get("curso", "")), ("ID curso Canvas", row.get("curso_id_canvas", "")), ("Sección", row.get("seccion", "")), ("ID sección Canvas", row.get("seccion_id_canvas", "")), ("Semana de análisis", row.get("semana", "")), ("Asesor académico remitente", asesor_academico), ("Asesor de bienestar asignado", asesor_bienestar)]),
+        ("3. Motivo de la derivación", [("Nivel de riesgo", risk), ("Nivel de prioridad", "Alta" if risk == "Alto" else "Media"), ("Motivo detectado", row.get("motivo_detectado", ""))]),
         ("4. Descripción breve del caso", [("Descripción", f"El estudiante presenta nivel de riesgo {risk.lower()} debido a {row.get('motivo_detectado', 'indicadores académicos de alerta')}. Se recomienda seguimiento por parte del área de bienestar estudiantil conforme al protocolo institucional.")]),
         ("5. Acciones previas realizadas", [("Acciones", acciones)]),
         ("6. Observaciones adicionales", [("Observaciones", observaciones)]),
@@ -1505,81 +1505,192 @@ with tabs[7]:
         if derivables.empty:
             st.success("No hay estudiantes en riesgo moderado o alto para derivar en el análisis activo.")
         else:
-            st.markdown("### Filtro por asesor de bienestar")
-            if "asesor_bienestar" not in derivables.columns:
-                derivables["asesor_bienestar"] = "Sin asesor asignado"
-            derivables["asesor_bienestar"] = derivables["asesor_bienestar"].fillna("Sin asesor asignado").replace("", "Sin asesor asignado")
-            asesores_detectados = sorted(derivables["asesor_bienestar"].dropna().astype(str).unique().tolist())
-            asesor_filtro = st.selectbox("Mostrar derivaciones que corresponden a", ["Todos"] + asesores_detectados)
+            st.markdown("### Derivaciones contextualizadas")
+            st.caption("El paquete se organiza por asesor de bienestar, curso/sección, asesor académico remitente y nivel de riesgo.")
+
+            # Asegurar columnas de contexto para estructura multi-curso.
+            for col, default in {
+                "periodo": "Sin periodo",
+                "curso": "Sin curso",
+                "curso_id_canvas": "",
+                "seccion": "Sin sección",
+                "seccion_id_canvas": "",
+                "semana": "",
+                "asesor_academico": asesor_academico,
+                "asesor_bienestar": "Sin asesor asignado",
+                "riesgo": "",
+                "motivo_detectado": "",
+            }.items():
+                if col not in derivables.columns:
+                    derivables[col] = default
+                derivables[col] = derivables[col].fillna(default).replace("", default)
+
+            st.markdown("#### Filtros de derivación")
+            f1, f2, f3 = st.columns(3)
+            f4, f5, f6 = st.columns(3)
+            asesores_b = sorted(derivables["asesor_bienestar"].dropna().astype(str).unique().tolist())
+            cursos = sorted(derivables["curso"].dropna().astype(str).unique().tolist())
+            secciones = sorted(derivables["seccion"].dropna().astype(str).unique().tolist())
+            asesores_a = sorted(derivables["asesor_academico"].dropna().astype(str).unique().tolist())
+            riesgos = sorted(derivables["riesgo"].dropna().astype(str).unique().tolist())
+            semanas = sorted(derivables["semana"].dropna().astype(str).unique().tolist())
+
+            asesor_filtro = f1.selectbox("Asesor de bienestar", ["Todos"] + asesores_b)
+            curso_filtro = f2.selectbox("Curso", ["Todos"] + cursos)
+            seccion_filtro = f3.selectbox("Sección", ["Todas"] + secciones)
+            asesor_acad_filtro = f4.selectbox("Asesor académico remitente", ["Todos"] + asesores_a)
+            riesgo_filtro = f5.selectbox("Nivel de riesgo", ["Todos"] + riesgos)
+            semana_filtro = f6.selectbox("Semana", ["Todas"] + semanas)
+
+            filtered = derivables.copy()
             if asesor_filtro != "Todos":
-                derivables = derivables[derivables["asesor_bienestar"].astype(str).eq(asesor_filtro)].copy()
+                filtered = filtered[filtered["asesor_bienestar"].astype(str).eq(asesor_filtro)]
+            if curso_filtro != "Todos":
+                filtered = filtered[filtered["curso"].astype(str).eq(curso_filtro)]
+            if seccion_filtro != "Todas":
+                filtered = filtered[filtered["seccion"].astype(str).eq(seccion_filtro)]
+            if asesor_acad_filtro != "Todos":
+                filtered = filtered[filtered["asesor_academico"].astype(str).eq(asesor_acad_filtro)]
+            if riesgo_filtro != "Todos":
+                filtered = filtered[filtered["riesgo"].astype(str).eq(riesgo_filtro)]
+            if semana_filtro != "Todas":
+                filtered = filtered[filtered["semana"].astype(str).eq(semana_filtro)]
 
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Derivables mostrados", len(derivables))
-            c2.metric("Riesgo moderado", int((derivables["riesgo"] == "Moderado").sum()))
-            c3.metric("Riesgo alto", int((derivables["riesgo"] == "Alto").sum()))
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Derivables mostrados", len(filtered))
+            c2.metric("Riesgo moderado", int((filtered["riesgo"] == "Moderado").sum()))
+            c3.metric("Riesgo alto", int((filtered["riesgo"] == "Alto").sum()))
+            c4.metric("Asesores bienestar", filtered["asesor_bienestar"].nunique())
 
-            st.dataframe(
-                derivables[[c for c in ["periodo", "carne", "nombre", "correo", "curso", "seccion", "asesor_academico", "riesgo", "cambio", "asesor_bienestar", "motivo_detectado"] if c in derivables.columns]],
-                use_container_width=True,
-                height=280,
-            )
+            if filtered.empty:
+                st.info("No hay estudiantes que coincidan con los filtros seleccionados.")
+            else:
+                preview_cols = [
+                    "periodo", "semana", "carne", "nombre", "correo", "curso", "curso_id_canvas",
+                    "seccion", "seccion_id_canvas", "asesor_academico", "riesgo", "cambio",
+                    "asesor_bienestar", "motivo_detectado"
+                ]
+                st.dataframe(filtered[[c for c in preview_cols if c in filtered.columns]], use_container_width=True, height=300)
 
-            obs = st.text_area("Observaciones adicionales para los formatos", height=100)
-            acciones = st.text_area(
-                "Acciones previas realizadas",
-                value="Se revisó avance académico en Canvas, se identificó el nivel de riesgo, se generó mensaje de seguimiento y se registra el caso para acompañamiento oportuno.",
-                height=100,
-            )
-            selected = st.multiselect(
-                "Seleccionar estudiantes para derivar",
-                derivables.index.tolist(),
-                format_func=lambda i: f"{derivables.loc[i,'nombre']} | {derivables.loc[i,'riesgo']} | Bienestar: {derivables.loc[i].get('asesor_bienestar','Sin asesor')}",
-            )
-            if selected and st.button("Generar paquete de derivación", type="primary"):
-                zip_buffer = io.BytesIO()
-                report_rows = []
-                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for i in selected:
-                        row = derivables.loc[i].copy()
-                        advisor = str(row.get("asesor_bienestar") or "Sin asesor asignado")
-                        row["observaciones"] = obs
-                        doc_bytes = make_derivation_doc(row, asesor_academico, advisor, obs, acciones)
-                        safe_student = re.sub(r"[^A-Za-z0-9_-]+", "_", str(row.get("nombre", "estudiante")))[:45]
-                        safe_advisor = re.sub(r"[^A-Za-z0-9_-]+", "_", advisor).strip("_") or "Sin_asesor"
-                        zf.writestr(f"{safe_advisor}/derivacion_{safe_student}_{row.get('riesgo')}.docx", doc_bytes)
-                        prioridad = "Alta" if row.get("riesgo") == "Alto" else "Media"
-                        report_rows.append({
-                            "id_derivacion": datetime.now().strftime("D%Y%m%d%H%M%S") + str(i),
-                            "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "periodo": row.get("periodo"),
-                            "carne": row.get("carne"),
-                            "nombre": row.get("nombre"),
-                            "correo": row.get("correo"),
-                            "curso": row.get("curso"),
-                            "curso_id_canvas": row.get("curso_id_canvas"),
-                            "seccion": row.get("seccion"),
-                            "seccion_id_canvas": row.get("seccion_id_canvas"),
-                            "riesgo": row.get("riesgo"),
-                            "prioridad": prioridad,
-                            "asesor_bienestar": advisor,
-                            "correo_bienestar": "",
-                            "motivo": row.get("motivo_detectado"),
-                            "acciones_previas": acciones,
-                            "observaciones": obs,
-                            "estado_derivacion": "Generada",
-                            "asesor_academico": asesor_academico,
-                        })
-                    report_df = pd.DataFrame(report_rows)
-                    bio = io.BytesIO()
-                    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
-                        report_df.to_excel(writer, index=False, sheet_name="Listado_Derivaciones")
-                        resumen = report_df.groupby(["asesor_bienestar", "riesgo"]).size().reset_index(name="cantidad") if not report_df.empty else pd.DataFrame()
-                        resumen.to_excel(writer, index=False, sheet_name="Resumen_por_Asesor")
-                    zf.writestr("listado_general_derivaciones.xlsx", bio.getvalue())
-                append_rows(st.session_state.db, "Derivaciones", report_rows)
-                st.success("Paquete generado y derivaciones registradas. El ZIP queda organizado por carpetas de asesor de bienestar.")
-                st.download_button("Descargar paquete ZIP", zip_buffer.getvalue(), file_name=f"paquete_derivaciones_{date.today()}.zip", mime="application/zip")
+                resumen_ctx = (
+                    filtered.groupby(["asesor_bienestar", "curso", "seccion", "asesor_academico", "riesgo"])
+                    .size()
+                    .reset_index(name="cantidad")
+                    .sort_values(["asesor_bienestar", "curso", "seccion", "riesgo"])
+                )
+                with st.expander("Ver resumen por asesor, curso, sección, remitente y riesgo"):
+                    st.dataframe(resumen_ctx, use_container_width=True)
+
+                obs = st.text_area("Observaciones adicionales para los formatos", height=100)
+                acciones = st.text_area(
+                    "Acciones previas realizadas",
+                    value="Se revisó avance académico en Canvas, se identificó el nivel de riesgo, se generó mensaje de seguimiento y se registra el caso para acompañamiento oportuno.",
+                    height=100,
+                )
+                selected = st.multiselect(
+                    "Seleccionar estudiantes para derivar",
+                    filtered.index.tolist(),
+                    format_func=lambda i: f"{filtered.loc[i,'nombre']} | {filtered.loc[i,'curso']} | {filtered.loc[i,'seccion']} | {filtered.loc[i,'riesgo']} | Bienestar: {filtered.loc[i].get('asesor_bienestar','Sin asesor')}",
+                )
+
+                def _slug(value: object, fallback: str = "Sin_dato") -> str:
+                    txt = str(value or fallback).strip()
+                    txt = re.sub(r"[^A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ_-]+", "_", txt)
+                    txt = re.sub(r"_+", "_", txt).strip("_")
+                    return txt[:70] or fallback
+
+                if selected and st.button("Generar paquete de derivación contextualizado", type="primary"):
+                    zip_buffer = io.BytesIO()
+                    report_rows = []
+                    selected_df = filtered.loc[selected].copy()
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for i, row in selected_df.iterrows():
+                            row = row.copy()
+                            advisor_b = str(row.get("asesor_bienestar") or "Sin asesor asignado")
+                            advisor_a = str(row.get("asesor_academico") or asesor_academico or "Sin asesor académico")
+                            curso_val = str(row.get("curso") or "Sin curso")
+                            seccion_val = str(row.get("seccion") or "Sin sección")
+                            riesgo_val = str(row.get("riesgo") or "Sin riesgo")
+                            periodo_val = str(row.get("periodo") or "Sin periodo")
+                            semana_val = str(row.get("semana") or "")
+                            prioridad = "Alta" if riesgo_val == "Alto" else "Media"
+
+                            row["observaciones"] = obs
+                            row["semana"] = semana_val
+                            doc_bytes = make_derivation_doc(row, advisor_a, advisor_b, obs, acciones)
+
+                            safe_advisor_b = _slug(advisor_b, "Sin_asesor")
+                            safe_curso = _slug(curso_val, "Sin_curso")
+                            safe_seccion = _slug(seccion_val, "Sin_seccion")
+                            safe_advisor_a = _slug(advisor_a, "Sin_remitente")
+                            safe_riesgo = _slug(riesgo_val, "Sin_riesgo")
+                            safe_student = _slug(row.get("nombre", "estudiante"), "estudiante")[:45]
+                            safe_carne = _slug(row.get("carne", "sin_carne"), "sin_carne")
+
+                            folder_context = f"{safe_advisor_b}/{safe_curso}_{safe_seccion}/Remitente_{safe_advisor_a}/{safe_riesgo}"
+                            file_name = f"derivacion_{safe_carne}_{safe_student}_{safe_riesgo}.docx"
+                            zf.writestr(f"{folder_context}/{file_name}", doc_bytes)
+
+                            report_rows.append({
+                                "id_derivacion": datetime.now().strftime("D%Y%m%d%H%M%S") + str(i),
+                                "fecha": timestamp,
+                                "periodo": periodo_val,
+                                "semana": semana_val,
+                                "carne": row.get("carne"),
+                                "nombre": row.get("nombre"),
+                                "correo": row.get("correo"),
+                                "curso": curso_val,
+                                "curso_id_canvas": row.get("curso_id_canvas"),
+                                "seccion": seccion_val,
+                                "seccion_id_canvas": row.get("seccion_id_canvas"),
+                                "riesgo": riesgo_val,
+                                "prioridad": prioridad,
+                                "asesor_bienestar": advisor_b,
+                                "correo_bienestar": row.get("correo_bienestar", ""),
+                                "motivo": row.get("motivo_detectado"),
+                                "acciones_previas": acciones,
+                                "observaciones": obs,
+                                "estado_derivacion": "Generada",
+                                "asesor_academico": advisor_a,
+                            })
+
+                        report_df = pd.DataFrame(report_rows)
+                        bio = io.BytesIO()
+                        with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+                            report_df.to_excel(writer, index=False, sheet_name="Listado_General")
+                            resumen_general = (
+                                report_df.groupby(["asesor_bienestar", "curso", "seccion", "asesor_academico", "riesgo"])
+                                .size()
+                                .reset_index(name="cantidad")
+                                if not report_df.empty else pd.DataFrame()
+                            )
+                            resumen_general.to_excel(writer, index=False, sheet_name="Resumen_Contextual")
+                        zf.writestr("listado_general_derivaciones.xlsx", bio.getvalue())
+
+                        # Listado individual dentro de la carpeta de cada asesor de bienestar.
+                        for advisor_b, group in report_df.groupby("asesor_bienestar"):
+                            advisor_b_slug = _slug(advisor_b, "Sin_asesor")
+                            bio_adv = io.BytesIO()
+                            with pd.ExcelWriter(bio_adv, engine="xlsxwriter") as writer:
+                                group.to_excel(writer, index=False, sheet_name="Listado_Asesor")
+                                resumen_adv = (
+                                    group.groupby(["curso", "seccion", "asesor_academico", "riesgo"])
+                                    .size()
+                                    .reset_index(name="cantidad")
+                                )
+                                resumen_adv.to_excel(writer, index=False, sheet_name="Resumen")
+                            zf.writestr(f"{advisor_b_slug}/listado_general_{advisor_b_slug}.xlsx", bio_adv.getvalue())
+
+                    append_rows(st.session_state.db, "Derivaciones", report_rows)
+                    st.success("Paquete generado y derivaciones registradas con contexto multi-curso, sección, remitente y riesgo.")
+                    st.download_button(
+                        "Descargar paquete ZIP contextualizado",
+                        zip_buffer.getvalue(),
+                        file_name=f"paquete_derivaciones_contextualizado_{date.today()}.zip",
+                        mime="application/zip",
+                    )
 
 # -----------------------------------------------------------------------------
 # Export

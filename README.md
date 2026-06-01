@@ -33,3 +33,10 @@ service_role_key = "TU_SERVICE_ROLE_KEY"
 ```
 
 La tabla compacta utilizada es `ave_base_datos`, donde cada hoja se guarda como JSONB.
+
+
+## Mejora integrada: derivaciones contextualizadas
+
+La pestaña **Derivaciones** ahora genera paquetes organizados por asesor de bienestar, curso/sección, asesor académico remitente y nivel de riesgo. Cada documento de derivación incluye el contexto académico completo del caso: periodo, curso, ID Canvas del curso, sección, ID Canvas de sección, semana de análisis, asesor académico remitente, asesor de bienestar asignado y nivel de prioridad.
+
+El ZIP generado incluye un listado general de todas las derivaciones y un listado específico dentro de la carpeta de cada asesor de bienestar.

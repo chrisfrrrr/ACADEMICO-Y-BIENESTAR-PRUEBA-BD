@@ -1,0 +1,47 @@
+MEJORA INTEGRADA - DERIVACIONES CONTEXTUALIZADAS
+
+La pestaña Derivaciones ahora organiza los paquetes de derivación por:
+
+1. Asesor de bienestar
+2. Curso y sección
+3. Asesor académico remitente
+4. Nivel de riesgo
+
+Estructura esperada del ZIP generado:
+
+Derivaciones/
+├── Astrid_Barriondo/
+│   ├── Matematica_Seccion_10/
+│   │   ├── Remitente_Christian_Pocol/
+│   │   │   ├── Alto/
+│   │   │   │   └── derivacion_262605_Nombre_Estudiante_Alto.docx
+│   │   │   └── Moderado/
+│   ├── Comunicacion_Seccion_03/
+│   └── listado_general_Astrid_Barriondo.xlsx
+├── Flor_De_Maria_Morales/
+│   ├── Matematica_Seccion_11/
+│   └── listado_general_Flor_De_Maria_Morales.xlsx
+└── listado_general_derivaciones.xlsx
+
+Cada formato de derivación incluye:
+- Periodo / cohorte
+- Curso
+- ID del curso Canvas
+- Sección
+- ID de sección Canvas
+- Semana de análisis
+- Asesor académico remitente
+- Asesor de bienestar asignado
+- Nivel de riesgo
+- Nivel de prioridad
+- Motivo detectado
+- Acciones previas
+- Observaciones adicionales
+
+También se agregaron filtros antes de generar derivaciones:
+- Asesor de bienestar
+- Curso
+- Sección
+- Asesor académico remitente
+- Nivel de riesgo
+- Semana

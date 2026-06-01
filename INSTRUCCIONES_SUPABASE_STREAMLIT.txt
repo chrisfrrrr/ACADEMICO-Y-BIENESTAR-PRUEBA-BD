@@ -1,0 +1,43 @@
+AVE Seguimiento PRO v12 - Configuración Supabase para Streamlit Cloud
+
+1. Crear proyecto en Supabase
+   - Entrar a https://supabase.com
+   - Crear un proyecto nuevo.
+   - Guardar la contraseña del proyecto en un lugar seguro.
+
+2. Crear la tabla de la app
+   - Entrar al proyecto.
+   - Ir a SQL Editor.
+   - Abrir el archivo supabase_schema.sql incluido en este proyecto.
+   - Copiar el contenido, pegarlo en SQL Editor y ejecutar Run.
+
+3. Obtener credenciales
+   - Ir a Project Settings > API.
+   - Copiar Project URL.
+   - Copiar service_role key.
+
+4. Configurar Secrets en Streamlit Cloud
+   - Entrar a la app en Streamlit Cloud.
+   - Ir a Settings > Secrets.
+   - Pegar lo siguiente, reemplazando los valores:
+
+[supabase]
+url = "https://TU-PROYECTO.supabase.co"
+service_role_key = "TU_SERVICE_ROLE_KEY"
+
+5. Actualizar requirements.txt en GitHub
+   - Verificar que el archivo requirements.txt incluya:
+     supabase>=2.8.0
+
+6. Usar la app
+   - Abrir la app en Streamlit Cloud.
+   - Ir a Base de datos.
+   - Seleccionar Usar Supabase en línea.
+   - Probar Supabase.
+   - Si es primera vez, podés cargar una base Excel o crear base nueva y luego presionar Guardar base actual en Supabase.
+   - En adelante se puede Leer base desde Supabase al iniciar y Guardar cambios en Supabase al finalizar.
+
+IMPORTANTE:
+- No subas la service_role_key a GitHub.
+- Usala únicamente en Streamlit Secrets.
+- La service_role_key permite modificar la base, por eso debe tratarse como contraseña institucional.

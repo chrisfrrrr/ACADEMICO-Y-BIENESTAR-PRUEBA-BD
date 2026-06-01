@@ -543,9 +543,19 @@ def _sheet_to_supabase_records(sheet: str, df: pd.DataFrame) -> Tuple[str, List[
         if df.empty:
             return table, []
         # Enriquecer último estado desde historial cuando existan datos.
-        for c in ["riesgo", "prioridad", "ultimo_promedio", "ultimo_actividades_pct", "ultimo_dias_inactivo", "ultima_fecha_consulta", "semana", "estado", "login_id"]:
+        # IMPORTANTE: las columnas de texto deben quedar como object/string.
+        # Si se crean como NaN, pandas las deja como float64 y luego falla al asignar valores
+        # como "Alto" o "Moderado" durante el guardado en Supabase.
+        text_cols_est = ["riesgo", "prioridad", "estado", "login_id", "ultima_fecha_consulta"]
+        num_cols_est = ["ultimo_promedio", "ultimo_actividades_pct", "ultimo_dias_inactivo", "semana"]
+        for c in text_cols_est:
             if c not in df.columns:
-                df[c] = np.nan
+                df[c] = None
+            else:
+                df[c] = df[c].astype(object)
+        for c in num_cols_est:
+            if c not in df.columns:
+                df[c] = None
         hist = st.session_state.get("db", {}).get("Historial_Estudiantes", pd.DataFrame()) if "db" in st.session_state else pd.DataFrame()
         if isinstance(hist, pd.DataFrame) and not hist.empty:
             h = normalize_key_columns(hist.copy())

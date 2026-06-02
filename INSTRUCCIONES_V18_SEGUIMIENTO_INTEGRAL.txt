@@ -1,0 +1,39 @@
+VERSIÓN 18 - SEGUIMIENTO INTEGRAL MULTI-CURSO
+
+Esta versión agrega una nueva pestaña llamada "Integral".
+
+Objetivo:
+- Comparar a un mismo estudiante entre varios cursos, secciones y semanas.
+- Identificar si el riesgo es puntual de un curso o generalizado en varios cursos.
+- Generar una recomendación antes de derivar a bienestar.
+
+La app usa principalmente la tabla/hoja Historial_Estudiantes de Supabase.
+Cada análisis debe guardar:
+- periodo
+- carne
+- nombre
+- curso
+- curso_id_canvas
+- seccion
+- seccion_id_canvas
+- semana
+- asesor_academico
+- asesor_bienestar
+- riesgo
+- fecha
+
+Nueva clasificación integral:
+- Bajo integral: bajo en todos los cursos registrados.
+- Moderado puntual: moderado en un curso.
+- Moderado integral: moderado en dos o más cursos.
+- Alto puntual: alto en un curso, pero no generalizado.
+- Alto integral: alto en varios cursos o alto + moderado en el mismo periodo/semana.
+
+Uso recomendado:
+1. Cada asesor analiza sus cursos y secciones desde Canvas.
+2. Guardar cambios en Supabase.
+3. Ir a la pestaña Integral.
+4. Filtrar por periodo, semana, asesor de bienestar o riesgo integral.
+5. Seleccionar un estudiante para ver su comparación por curso y evolución semanal.
+
+No requiere cambios adicionales en la estructura de Supabase v14/v15/v16/v17.

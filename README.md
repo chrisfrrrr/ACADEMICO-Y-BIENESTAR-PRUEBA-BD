@@ -45,3 +45,9 @@ El ZIP generado incluye un listado general de todas las derivaciones y un listad
 ## Versión 14 - Supabase multi-tabla
 
 Esta versión guarda la información en tablas separadas de Supabase: estudiantes, asesores_bienestar, historial_estudiantes, derivaciones, mensajes_enviados, consultas_canvas y configuracion. La tabla ave_base_datos queda como respaldo. Para configurar la conexión, revisar INSTRUCCIONES_V14_SUPABASE_MULTITABLA.txt.
+
+## Versión 18 - Seguimiento integral multi-curso
+
+Se agregó una pestaña **Integral** para comparar el comportamiento de un mismo estudiante entre distintos cursos, secciones y semanas. Esta vista permite responder si un estudiante presenta dificultad solo en un curso específico o si el riesgo es generalizado en varios cursos.
+
+La clasificación integral incluye: Bajo integral, Moderado puntual, Moderado integral, Alto puntual y Alto integral. Esta lógica ayuda a decidir si conviene hacer seguimiento académico específico o derivación prioritaria a bienestar.

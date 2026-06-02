@@ -1506,7 +1506,111 @@ seccion_manual = st.sidebar.text_input("Sección del curso", value="")
 st.title(APP_NAME)
 st.caption("Base general multi-curso y multi-asesor: cada análisis queda separado por periodo, curso, sección, semana y asesor académico.")
 
-tabs = st.tabs(["🏠 Inicio", "🗂️ Base de datos", "🔌 Canvas / Datos", "📊 Dashboard", "🏢 Institucional", "👤 Estudiante", "✉️ Mensajes", "📌 Derivaciones", "⬇️ Exportar"])
+
+
+# -----------------------------------------------------------------------------
+# Seguimiento integral multi-curso
+# -----------------------------------------------------------------------------
+def _to_numeric_safe(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(series, errors="coerce")
+
+
+def prepare_integral_history(hist: pd.DataFrame) -> pd.DataFrame:
+    """Prepara el historial para comparar estudiantes entre cursos y semanas."""
+    if hist is None or hist.empty:
+        return pd.DataFrame()
+    h = normalize_key_columns(hist.copy())
+    required = [
+        "fecha", "periodo", "carne", "nombre", "correo", "curso", "curso_id_canvas",
+        "seccion", "semana", "asesor_academico", "asesor_bienestar", "actividades_pct",
+        "promedio", "entregas_tarde", "dias_inactivo", "riesgo", "motivo_detectado"
+    ]
+    for c in required:
+        if c not in h.columns:
+            h[c] = np.nan
+    h["carne"] = h["carne"].apply(clean_key_value)
+    h["nombre"] = h.apply(lambda r: safe_nombre(r.get("nombre"), r.get("carne"), r.get("correo"), r.get("canvas_user_id")), axis=1)
+    h["semana_num"] = _to_numeric_safe(h["semana"])
+    h["riesgo_score"] = h["riesgo"].map(RIESGO_ORDEN).fillna(0).astype(int)
+    h["fecha_dt"] = pd.to_datetime(h["fecha"], errors="coerce")
+    for c in ["periodo", "curso", "seccion", "asesor_academico", "asesor_bienestar", "riesgo"]:
+        h[c] = h[c].fillna("Sin dato").astype(str)
+    return h
+
+
+def latest_records_by_context(hist: pd.DataFrame) -> pd.DataFrame:
+    """Devuelve el último registro por estudiante + curso + sección + semana.
+
+    Esto evita que una misma consulta repetida duplique la lectura comparativa.
+    """
+    if hist.empty:
+        return hist
+    h = hist.copy()
+    sort_cols = ["fecha_dt"] if "fecha_dt" in h.columns else []
+    if sort_cols:
+        h = h.sort_values(sort_cols)
+    keys = ["periodo", "carne", "curso", "seccion", "semana"]
+    for k in keys:
+        if k not in h.columns:
+            h[k] = ""
+    return h.drop_duplicates(subset=keys, keep="last").reset_index(drop=True)
+
+
+def compute_integral_status(group: pd.DataFrame) -> Tuple[str, str]:
+    """Calcula riesgo integral del estudiante a partir de sus cursos en una semana/periodo."""
+    if group.empty:
+        return "Sin información", "No existe información suficiente para emitir una recomendación."
+    riesgo = group["riesgo"].fillna("Sin dato").astype(str)
+    alto = int((riesgo == "Alto").sum())
+    moderado = int((riesgo == "Moderado").sum())
+    bajo = int((riesgo == "Bajo").sum())
+    total = len(group)
+    cursos_riesgo = group[group["riesgo"].isin(["Moderado", "Alto"])]["curso"].dropna().astype(str).unique().tolist()
+    cursos_txt = ", ".join(cursos_riesgo[:5]) if cursos_riesgo else "ningún curso"
+
+    if alto >= 2 or (alto >= 1 and moderado >= 1):
+        return "Alto integral", f"Presenta riesgo en varios cursos ({cursos_txt}). Se recomienda derivación prioritaria a bienestar y coordinación entre asesores académicos."
+    if alto == 1 and total > 1:
+        curso_alto = group[group["riesgo"] == "Alto"]["curso"].iloc[0]
+        return "Alto puntual", f"El riesgo alto se concentra en {curso_alto}. Se recomienda seguimiento académico específico y revisar si requiere derivación según persistencia semanal."
+    if alto == 1:
+        return "Alto", "Presenta riesgo alto en el único curso disponible en la base. Se recomienda seguimiento cercano y posible derivación."
+    if moderado >= 2:
+        return "Moderado integral", f"Presenta riesgo moderado en varios cursos ({cursos_txt}). Se recomienda contacto preventivo y monitoreo conjunto."
+    if moderado == 1:
+        curso_mod = group[group["riesgo"] == "Moderado"]["curso"].iloc[0]
+        return "Moderado puntual", f"El riesgo moderado se concentra en {curso_mod}. Se recomienda mensaje de seguimiento y revisión en la siguiente semana."
+    if bajo == total:
+        return "Bajo integral", "No presenta señales relevantes de riesgo en los cursos registrados para esta semana. Mantener retroalimentación preventiva."
+    return "Sin clasificación integral", "La información es incompleta; revisar datos de Canvas y registros históricos."
+
+
+def build_integral_summary(hist: pd.DataFrame) -> pd.DataFrame:
+    """Construye resumen integral por estudiante, periodo y semana."""
+    h = latest_records_by_context(prepare_integral_history(hist))
+    if h.empty:
+        return pd.DataFrame()
+    rows = []
+    group_cols = ["periodo", "semana", "carne"]
+    for (periodo, semana, carne), g in h.groupby(group_cols, dropna=False):
+        status, rec = compute_integral_status(g)
+        rows.append({
+            "periodo": periodo,
+            "semana": semana,
+            "carne": carne,
+            "nombre": g["nombre"].dropna().astype(str).iloc[-1] if not g["nombre"].dropna().empty else f"Estudiante sin nombre - {carne}",
+            "correo": g["correo"].dropna().astype(str).iloc[-1] if "correo" in g.columns and not g["correo"].dropna().empty else "",
+            "asesor_bienestar": g["asesor_bienestar"].dropna().astype(str).iloc[-1] if not g["asesor_bienestar"].dropna().empty else "Sin dato",
+            "cursos_registrados": g["curso"].dropna().astype(str).nunique(),
+            "cursos_alto": int((g["riesgo"] == "Alto").sum()),
+            "cursos_moderado": int((g["riesgo"] == "Moderado").sum()),
+            "cursos_bajo": int((g["riesgo"] == "Bajo").sum()),
+            "riesgo_integral": status,
+            "recomendacion": rec,
+        })
+    return pd.DataFrame(rows)
+
+tabs = st.tabs(["🏠 Inicio", "🗂️ Base de datos", "🔌 Canvas / Datos", "📊 Dashboard", "🏢 Institucional", "👤 Estudiante", "✉️ Mensajes", "📌 Derivaciones", "🔎 Integral", "⬇️ Exportar"])
 
 # -----------------------------------------------------------------------------
 # Inicio
@@ -2175,10 +2279,96 @@ with tabs[7]:
                         mime="application/zip",
                     )
 
+
+# -----------------------------------------------------------------------------
+# Seguimiento integral del estudiante
+# -----------------------------------------------------------------------------
+with tabs[8]:
+    st.markdown("### Seguimiento integral multi-curso del estudiante")
+    st.caption("Compara el desempeño del mismo estudiante entre cursos, secciones y semanas. Esta vista responde si el riesgo es puntual de un curso o generalizado en varios cursos.")
+
+    hist_raw = st.session_state.db.get("Historial_Estudiantes", pd.DataFrame()).copy()
+    if hist_raw.empty and not st.session_state.analysis_df.empty:
+        hist_raw = st.session_state.analysis_df.copy()
+    hist = prepare_integral_history(hist_raw)
+    hist_latest = latest_records_by_context(hist)
+
+    if hist_latest.empty:
+        st.warning("Aún no hay historial suficiente. Ejecutá análisis de cursos o leé la base desde Supabase.")
+    else:
+        f1, f2, f3, f4 = st.columns(4)
+        periodos = sorted(hist_latest["periodo"].dropna().astype(str).unique().tolist())
+        periodo_sel = f1.selectbox("Periodo", ["Todos"] + periodos, index=0)
+        semanas = sorted(hist_latest["semana"].dropna().astype(str).unique().tolist(), key=lambda x: float(x) if str(x).replace('.', '', 1).isdigit() else 999)
+        semana_sel = f2.selectbox("Semana", ["Todas"] + semanas, index=0)
+        bienestar_opts = sorted(hist_latest["asesor_bienestar"].dropna().astype(str).unique().tolist())
+        bienestar_sel = f3.selectbox("Asesor de bienestar", ["Todos"] + bienestar_opts, index=0)
+        riesgo_int_opts = ["Todos", "Alto integral", "Alto puntual", "Alto", "Moderado integral", "Moderado puntual", "Bajo integral", "Sin clasificación integral"]
+
+        hfil = hist_latest.copy()
+        if periodo_sel != "Todos":
+            hfil = hfil[hfil["periodo"].astype(str) == periodo_sel]
+        if semana_sel != "Todas":
+            hfil = hfil[hfil["semana"].astype(str) == semana_sel]
+        if bienestar_sel != "Todos":
+            hfil = hfil[hfil["asesor_bienestar"].astype(str) == bienestar_sel]
+
+        summary = build_integral_summary(hfil)
+        riesgo_int_sel = f4.selectbox("Riesgo integral", riesgo_int_opts, index=0)
+        if not summary.empty and riesgo_int_sel != "Todos":
+            summary = summary[summary["riesgo_integral"] == riesgo_int_sel]
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Estudiantes comparados", len(summary))
+        m2.metric("Alto integral", int((summary["riesgo_integral"] == "Alto integral").sum()) if not summary.empty else 0)
+        m3.metric("Alto puntual", int((summary["riesgo_integral"] == "Alto puntual").sum()) if not summary.empty else 0)
+        m4.metric("Moderado integral", int((summary["riesgo_integral"] == "Moderado integral").sum()) if not summary.empty else 0)
+
+        if not summary.empty:
+            st.markdown("#### Resumen integral por estudiante")
+            st.dataframe(summary[["periodo", "semana", "carne", "nombre", "asesor_bienestar", "cursos_registrados", "cursos_alto", "cursos_moderado", "cursos_bajo", "riesgo_integral", "recomendacion"]], use_container_width=True, height=330)
+
+            fig_summary = px.histogram(summary, x="riesgo_integral", color="riesgo_integral", title="Clasificación integral de estudiantes")
+            st.plotly_chart(fig_summary, use_container_width=True)
+
+            st.markdown("#### Comparativo detallado de un estudiante")
+            student_labels = (summary["nombre"].fillna("") + " | " + summary["carne"].fillna("").astype(str) + " | " + summary["riesgo_integral"].fillna("")).tolist()
+            idx_int = st.selectbox("Seleccionar estudiante para comparar cursos", range(len(student_labels)), format_func=lambda i: student_labels[i])
+            selected_summary = summary.iloc[idx_int]
+            carne_sel = str(selected_summary.get("carne", ""))
+            periodo_student = str(selected_summary.get("periodo", ""))
+            semana_student = str(selected_summary.get("semana", ""))
+
+            st.info(f"**Riesgo integral:** {selected_summary.get('riesgo_integral')}  \\n**Recomendación:** {selected_summary.get('recomendacion')}")
+
+            student_all = hist_latest[hist_latest["carne"].astype(str) == carne_sel].copy()
+            if periodo_sel != "Todos":
+                student_all = student_all[student_all["periodo"].astype(str) == periodo_sel]
+            st.markdown("##### Comparación por curso en la semana seleccionada")
+            student_week = student_all[(student_all["periodo"].astype(str) == periodo_student) & (student_all["semana"].astype(str) == semana_student)].copy()
+            cols_course = [c for c in ["periodo", "semana", "curso", "seccion", "asesor_academico", "asesor_bienestar", "actividades_pct", "promedio", "entregas_tarde", "dias_inactivo", "riesgo", "motivo_detectado"] if c in student_week.columns]
+            st.dataframe(student_week[cols_course], use_container_width=True)
+
+            st.markdown("##### Evolución semanal del estudiante")
+            cols_evo = [c for c in ["periodo", "semana", "curso", "seccion", "asesor_academico", "actividades_pct", "promedio", "riesgo", "motivo_detectado", "fecha"] if c in student_all.columns]
+            st.dataframe(student_all.sort_values(["periodo", "curso", "semana_num", "fecha_dt"], na_position="last")[cols_evo], use_container_width=True, height=280)
+
+            if not student_all.empty:
+                plot_df = student_all.copy()
+                plot_df["semana_num"] = pd.to_numeric(plot_df["semana"], errors="coerce")
+                plot_df = plot_df.dropna(subset=["semana_num"])
+                if not plot_df.empty:
+                    fig_evo = px.line(plot_df.sort_values("semana_num"), x="semana_num", y="riesgo_score", color="curso", markers=True, hover_data=["seccion", "riesgo", "asesor_academico"], title="Evolución del riesgo por curso")
+                    fig_evo.update_yaxes(tickmode="array", tickvals=[1, 2, 3], ticktext=["Bajo", "Moderado", "Alto"])
+                    st.plotly_chart(fig_evo, use_container_width=True)
+
+        else:
+            st.info("No hay estudiantes que coincidan con los filtros seleccionados.")
+
 # -----------------------------------------------------------------------------
 # Export
 # -----------------------------------------------------------------------------
-with tabs[8]:
+with tabs[9]:
     st.markdown("### Exportar base actualizada")
     if (st.session_state.db.get("Estudiantes", pd.DataFrame()).empty) and not st.session_state.db.get("Historial_Estudiantes", pd.DataFrame()).empty:
         st.session_state.db["Estudiantes"] = latest_students_from_history(st.session_state.db)

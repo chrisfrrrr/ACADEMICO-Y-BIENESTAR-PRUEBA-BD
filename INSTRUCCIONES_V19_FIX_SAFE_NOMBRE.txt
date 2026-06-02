@@ -1,0 +1,9 @@
+VERSIÓN 19 - Corrección safe_nombre en módulo Integral
+
+Corrección aplicada:
+- Se agregó la función safe_nombre(), requerida por el módulo Seguimiento integral multi-curso.
+- Esta función evita el error NameError al preparar el historial integral.
+- También garantiza que los estudiantes sin nombre devuelto por Canvas no rompan la app; se asigna un nombre temporal trazable con carné, correo, login_id o canvas_user_id.
+
+No es necesario modificar Supabase ni volver a ejecutar scripts SQL.
+Solo reemplazar/subir esta versión de la app y redeployar en Streamlit Cloud.

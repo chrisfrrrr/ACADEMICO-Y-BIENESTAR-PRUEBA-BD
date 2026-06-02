@@ -502,6 +502,20 @@ def _fallback_nombre(rec: Dict) -> str:
     return "Estudiante sin nombre"
 
 
+
+
+def safe_nombre(nombre=None, carne=None, correo=None, canvas_user_id=None, login_id=None) -> str:
+    """Versión compatible para módulos de análisis integral.
+    Evita NameError y garantiza que el nombre nunca quede vacío.
+    """
+    return _fallback_nombre({
+        "nombre": nombre,
+        "carne": carne,
+        "correo": correo,
+        "canvas_user_id": canvas_user_id,
+        "login_id": login_id,
+    })
+
 def _safe_datetime_text(value):
     """Devuelve fecha como texto ISO o None para campos timestamptz."""
     if pd.isna(value):

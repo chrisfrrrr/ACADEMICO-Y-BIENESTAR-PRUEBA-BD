@@ -1955,7 +1955,7 @@ with tabs[7]:
             st.success("No hay estudiantes en riesgo moderado o alto para derivar en el análisis activo.")
         else:
             st.markdown("### Derivaciones contextualizadas")
-            st.caption("El paquete se organiza por asesor de bienestar, curso/sección, asesor académico remitente y nivel de riesgo.")
+            st.caption("El paquete se organiza por asesor de bienestar, curso/sección, asesor académico remitente y nivel de riesgo. Las carpetas y archivos se abrevian para evitar errores de rutas largas en Windows; el detalle completo queda en los listados Excel.")
 
             # Asegurar columnas de contexto para estructura multi-curso.
             for col, default in {
@@ -2042,11 +2042,33 @@ with tabs[7]:
                     format_func=lambda i: f"{filtered.loc[i,'nombre']} | {filtered.loc[i,'curso']} | {filtered.loc[i,'seccion']} | {filtered.loc[i,'riesgo']} | Bienestar: {filtered.loc[i].get('asesor_bienestar','Sin asesor')}",
                 )
 
-                def _slug(value: object, fallback: str = "Sin_dato") -> str:
+                def _slug(value: object, fallback: str = "Sin_dato", max_len: int = 35) -> str:
+                    """Crea nombres seguros y cortos para carpetas/archivos dentro del ZIP.
+
+                    Windows suele fallar al descomprimir cuando las rutas internas del ZIP
+                    son muy largas. Por eso se limitan los segmentos y se deja el detalle
+                    completo en los listados Excel del paquete.
+                    """
                     txt = str(value or fallback).strip()
                     txt = re.sub(r"[^A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ_-]+", "_", txt)
                     txt = re.sub(r"_+", "_", txt).strip("_")
-                    return txt[:70] or fallback
+                    txt = txt[:max_len].strip("_")
+                    return txt or fallback
+
+                def _initials(value: object, fallback: str = "NA", max_len: int = 18) -> str:
+                    txt = str(value or "").strip()
+                    parts = [p for p in re.split(r"\s+", txt) if p]
+                    if not parts:
+                        return fallback
+                    if len(parts) == 1:
+                        return _slug(parts[0], fallback, max_len)
+                    compact = "".join([parts[0]] + [p[0] for p in parts[1:]])
+                    return _slug(compact, fallback, max_len)
+
+                def _zip_path(*parts: object) -> str:
+                    """Une segmentos ya abreviados y garantiza una ruta interna razonable."""
+                    safe_parts = [_slug(part, "X", 32) for part in parts if str(part or "").strip()]
+                    return "/".join(safe_parts)
 
                 if selected and st.button("Generar paquete de derivación contextualizado", type="primary"):
                     zip_buffer = io.BytesIO()
@@ -2070,17 +2092,28 @@ with tabs[7]:
                             row["semana"] = semana_val
                             doc_bytes = make_derivation_doc(row, advisor_a, advisor_b, obs, acciones)
 
-                            safe_advisor_b = _slug(advisor_b, "Sin_asesor")
-                            safe_curso = _slug(curso_val, "Sin_curso")
-                            safe_seccion = _slug(seccion_val, "Sin_seccion")
-                            safe_advisor_a = _slug(advisor_a, "Sin_remitente")
-                            safe_riesgo = _slug(riesgo_val, "Sin_riesgo")
-                            safe_student = _slug(row.get("nombre", "estudiante"), "estudiante")[:45]
-                            safe_carne = _slug(row.get("carne", "sin_carne"), "sin_carne")
+                            # Estructura contextual, pero abreviada para evitar el error de Windows:
+                            # "Ruta de acceso demasiado larga" al descomprimir el ZIP.
+                            safe_advisor_b = _initials(advisor_b, "SinAsesor", 22)
+                            safe_curso_id = _slug(row.get("curso_id_canvas") or curso_val, "Curso", 14)
+                            safe_seccion = _slug(seccion_val, "S", 10)
+                            safe_advisor_a = _initials(advisor_a, "Rem", 18)
+                            safe_riesgo = _slug(riesgo_val, "Riesgo", 10)
+                            safe_carne = _slug(row.get("carne", "sin_carne"), "sin_carne", 18)
 
-                            folder_context = f"{safe_advisor_b}/{safe_curso}_{safe_seccion}/Remitente_{safe_advisor_a}/{safe_riesgo}"
-                            file_name = f"derivacion_{safe_carne}_{safe_student}_{safe_riesgo}.docx"
-                            zf.writestr(f"{folder_context}/{file_name}", doc_bytes)
+                            folder_context = _zip_path(
+                                f"B_{safe_advisor_b}",
+                                f"C_{safe_curso_id}_S_{safe_seccion}",
+                                f"A_{safe_advisor_a}",
+                                safe_riesgo,
+                            )
+                            file_name = f"D_{safe_carne}_{safe_riesgo}.docx"
+                            internal_path = f"{folder_context}/{file_name}"
+                            if len(internal_path) > 150:
+                                # Última protección: carpeta aún más corta si algún dato viene excesivamente largo.
+                                folder_context = _zip_path(f"B_{safe_advisor_b}", f"C_{safe_curso_id}", safe_riesgo)
+                                internal_path = f"{folder_context}/{file_name}"
+                            zf.writestr(internal_path, doc_bytes)
 
                             report_rows.append({
                                 "id_derivacion": datetime.now().strftime("D%Y%m%d%H%M%S") + str(i),
@@ -2103,6 +2136,7 @@ with tabs[7]:
                                 "observaciones": obs,
                                 "estado_derivacion": "Generada",
                                 "asesor_academico": advisor_a,
+                                "ruta_archivo_zip": internal_path,
                             })
 
                         report_df = pd.DataFrame(report_rows)
@@ -2120,7 +2154,7 @@ with tabs[7]:
 
                         # Listado individual dentro de la carpeta de cada asesor de bienestar.
                         for advisor_b, group in report_df.groupby("asesor_bienestar"):
-                            advisor_b_slug = _slug(advisor_b, "Sin_asesor")
+                            advisor_b_slug = _initials(advisor_b, "SinAsesor", 22)
                             bio_adv = io.BytesIO()
                             with pd.ExcelWriter(bio_adv, engine="xlsxwriter") as writer:
                                 group.to_excel(writer, index=False, sheet_name="Listado_Asesor")

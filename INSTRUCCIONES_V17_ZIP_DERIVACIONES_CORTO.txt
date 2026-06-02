@@ -1,0 +1,21 @@
+AVE Seguimiento PRO v17 - Corrección de ZIP de derivaciones
+
+Esta versión corrige el error de Windows:
+Error 0x80010135: Ruta de acceso demasiado larga
+
+Cambio aplicado:
+- Las carpetas internas del ZIP siguen organizadas por asesor de bienestar, curso/sección, asesor académico remitente y riesgo.
+- Los nombres se abrevian para que Windows pueda descomprimir el archivo sin bloquearse.
+- El detalle completo de estudiante, curso, sección, asesor, riesgo y ruta del archivo queda registrado en:
+  listado_general_derivaciones.xlsx
+  y en el listado individual de cada asesor.
+
+Ejemplo de estructura nueva:
+Derivaciones/
+  B_AstridB/
+    C_46214_S_10/
+      A_ChristianP/
+        Alto/
+          D_262605_Alto.docx
+
+Si se desea ver el nombre completo del estudiante o curso, abrir el Excel listado_general_derivaciones.xlsx dentro del paquete.
